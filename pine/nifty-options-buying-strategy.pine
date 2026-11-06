@@ -1,0 +1,229 @@
+//@version=5
+strategy(
+     "NIFTY Options Buying Strategy v9",
+     overlay=true,
+     pyramiding=0,
+     initial_capital=100000,
+     process_orders_on_close=true)
+
+//====================================================
+// INPUTS
+//====================================================
+
+atrPeriod = input.int(10, "Supertrend ATR Period")
+factor    = input.float(3.0, "Supertrend Multiplier")
+
+rsiLength = input.int(14, "RSI Length")
+
+bbLength  = input.int(20, "BB Length")
+bbMult    = input.float(2.0, "BB Multiplier")
+
+//====================================================
+// DAILY RESET
+//====================================================
+
+var int ceTradesToday = 0
+var int peTradesToday = 0
+
+newDay = ta.change(time("D"))
+
+if newDay
+    ceTradesToday := 0
+    peTradesToday := 0
+
+//====================================================
+// TIME FILTERS FOR 3-MIN NSE
+//====================================================
+
+currentMinutes = hour * 60 + minute
+
+// No entries after 14:45
+entryAllowed = currentMinutes < 885
+
+// Last 3-minute candle of NSE session
+eodExitBar = hour == 15 and minute >= 27
+
+//====================================================
+// SUPERTREND
+//====================================================
+
+[st, direction] = ta.supertrend(factor, atrPeriod)
+
+bullTrend = direction < 0
+bearTrend = direction > 0
+
+//====================================================
+// RSI
+//====================================================
+
+rsiValue = ta.rsi(close, rsiLength)
+
+//====================================================
+// BOLLINGER BANDS
+//====================================================
+
+basis   = ta.sma(close, bbLength)
+dev     = bbMult * ta.stdev(close, bbLength)
+
+upperBB = basis + dev
+lowerBB = basis - dev
+
+//====================================================
+// TRADITIONAL PIVOTS
+//====================================================
+
+pivotAnchor = timeframe.change("D")
+
+pivotLevels = ta.pivot_point_levels(
+     "Traditional",
+     pivotAnchor)
+
+float pivot = array.get(pivotLevels, 0)
+float R1    = array.get(pivotLevels, 1)
+float S1    = array.get(pivotLevels, 4)
+
+//====================================================
+// ENTRY CONDITIONS
+//====================================================
+
+longCondition =
+     bullTrend and
+     rsiValue > 70 and
+     close > R1 and
+     close > upperBB
+
+shortCondition =
+     bearTrend and
+     rsiValue < 30 and
+     close < S1 and
+     close < lowerBB
+
+//====================================================
+// ENTRY SIGNALS
+//====================================================
+
+ceEntry =
+     longCondition and
+     strategy.position_size == 0 and
+     ceTradesToday == 0 and
+     entryAllowed and
+     not eodExitBar
+
+peEntry =
+     shortCondition and
+     strategy.position_size == 0 and
+     peTradesToday == 0 and
+     entryAllowed and
+     not eodExitBar
+
+//====================================================
+// ENTRIES
+//====================================================
+
+if ceEntry
+    strategy.entry("CE", strategy.long)
+    ceTradesToday += 1
+
+if peEntry
+    strategy.entry("PE", strategy.short)
+    peTradesToday += 1
+
+//====================================================
+// SUPERTREND EXITS
+//====================================================
+
+if strategy.position_size > 0 and bearTrend
+    strategy.close("CE", comment="ST Exit")
+
+if strategy.position_size < 0 and bullTrend
+    strategy.close("PE", comment="ST Exit")
+
+//====================================================
+// MANDATORY EOD EXIT
+//====================================================
+
+if eodExitBar and strategy.position_size != 0
+    strategy.close_all(comment="EOD Exit")
+
+//====================================================
+// EXTRA SAFETY
+//====================================================
+
+if newDay and strategy.position_size != 0
+    strategy.close_all(comment="New Day Exit")
+
+//====================================================
+// BACKGROUND
+//====================================================
+
+bgcolor(
+     strategy.position_size > 0 ?
+     color.new(color.green, 88) :
+     strategy.position_size < 0 ?
+     color.new(color.red, 88) :
+     na)
+
+//====================================================
+// BAR COLORS
+//====================================================
+
+barcolor(
+     strategy.position_size > 0 ?
+     color.lime :
+     strategy.position_size < 0 ?
+     color.red :
+     na)
+
+//====================================================
+// PLOTS
+//====================================================
+
+plot(st,
+     title="Supertrend",
+     color=bullTrend ? color.green : color.red,
+     linewidth=2)
+
+plot(upperBB,
+     title="Upper BB",
+     color=color.white)
+
+plot(lowerBB,
+     title="Lower BB",
+     color=color.white)
+
+plot(pivot,
+     title="Pivot",
+     color=color.orange,
+     linewidth=2)
+
+plot(R1,
+     title="R1",
+     color=color.red,
+     linewidth=2)
+
+plot(S1,
+     title="S1",
+     color=color.lime,
+     linewidth=2)
+
+//====================================================
+// MARKERS
+//====================================================
+
+plotshape(
+     ceEntry,
+     title="CE Entry",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=color.lime,
+     text="CE",
+     size=size.small)
+
+plotshape(
+     peEntry,
+     title="PE Entry",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=color.red,
+     text="PE",
+     size=size.small)
