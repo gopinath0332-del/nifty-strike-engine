@@ -1,9 +1,12 @@
 """
 config/settings.py
 ==================
-Loads and validates settings:
-  - Secrets & credentials (API keys, passwords, webhook) come from .env
-  - Strategy, trade settings, indicator parameters, and timing come from config/settings.yaml
+Application Settings Loader.
+
+Architecture:
+  - Secrets & Credentials (API keys, secrets, tokens, webhook) -> .env
+  - All Strategy, Trade, Timing, and Indicator settings -> config/settings.yml
+    (SINGLE SOURCE OF TRUTH)
 """
 
 from __future__ import annotations
@@ -14,33 +17,39 @@ import yaml
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SETTINGS_YAML_PATH = os.path.join(os.path.dirname(__file__), "settings.yaml")
 SETTINGS_YML_PATH = os.path.join(os.path.dirname(__file__), "settings.yml")
+SETTINGS_YAML_PATH = os.path.join(os.path.dirname(__file__), "settings.yaml")
 
 
 def _resolve_yaml_path(custom_path: str | None = None) -> str:
-    """Finds either settings.yaml or settings.yml, whichever exists."""
+    """Resolves path to settings.yml (primary single source of truth)."""
     if custom_path and os.path.exists(custom_path):
         return custom_path
-    if os.path.exists(SETTINGS_YAML_PATH):
-        return SETTINGS_YAML_PATH
     if os.path.exists(SETTINGS_YML_PATH):
         return SETTINGS_YML_PATH
-    return SETTINGS_YAML_PATH
+    if os.path.exists(SETTINGS_YAML_PATH):
+        return SETTINGS_YAML_PATH
+    return SETTINGS_YML_PATH
 
 
 def _load_yaml_settings(yaml_path: str | None = None) -> dict:
-    """Parses settings.yaml or settings.yml into a dictionary."""
+    """
+    Parses settings.yml into a dictionary.
+    settings.yml is the single source of truth for all strategy parameters.
+    """
     target_path = _resolve_yaml_path(yaml_path)
     if not os.path.exists(target_path):
-        return {}
+        raise FileNotFoundError(
+            f"Configuration file not found: {target_path}. "
+            "config/settings.yml is required as the single source of truth."
+        )
 
     with open(target_path, "r", encoding="utf-8") as f:
         doc = yaml.safe_load(f) or {}
 
     parsed = {}
 
-    # Trade
+    # Trade settings
     trade = doc.get("trade", {})
     if "lot_size" in trade:
         parsed["lot_size"] = int(trade["lot_size"])
@@ -94,6 +103,11 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
 
 
 class Settings(BaseSettings):
+    """
+    Application Settings:
+      - Secrets & credentials validated from .env
+      - Strategy, indicators, timing, and trading parameters loaded from config/settings.yml
+    """
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -110,36 +124,39 @@ class Settings(BaseSettings):
     # ---- Live Trading Gate (from .env) -----------------------
     live_order_placement: bool = False
 
-    # ---- Strategy & Database (defaults or from settings.yaml) -
-    strategy_name: str = "NIFTY_V9"
-    firestore_credentials_path: str = "config/serviceAccountKey.json"
-    firestore_collection: str = "nifty"
+    # ---- Strategy & Application Parameters (from settings.yml) -
+    strategy_name: str
+    firestore_credentials_path: str
+    firestore_collection: str
 
-    # ---- Trade Settings (defaults or from settings.yaml) -----
-    lot_size: int = 65
-    max_trades_per_day: int = 1
+    # Trade settings
+    lot_size: int
+    max_trades_per_day: int
 
-    # ---- Indicator Parameters (defaults or from settings.yaml)
-    st_atr_period: int = 10
-    st_factor: float = 3.0
-    st_buffer_points: float = 5.0
-    rsi_length: int = 14
-    bb_length: int = 20
-    bb_mult: float = 2.0
+    # Indicators
+    st_atr_period: int
+    st_factor: float
+    st_buffer_points: float
+    rsi_length: int
+    bb_length: int
+    bb_mult: float
 
-    # ---- Logging (defaults or from settings.yaml) ------------
-    log_level: str = "INFO"
+    # Logging
+    log_level: str
 
-    # ---- Session Timing (IST) (defaults or from settings.yaml)
-    candle_interval_minutes: int = 3
-    entry_cutoff_time: str = "14:45"
-    eod_exit_time: str = "15:00"
+    # Timing
+    candle_interval_minutes: int
+    entry_cutoff_time: str
+    eod_exit_time: str
 
     @classmethod
-    def load(cls, yaml_path: str = SETTINGS_YAML_PATH) -> "Settings":
-        """Loads settings merging .env secrets with settings.yaml configurations."""
-        yaml_overrides = _load_yaml_settings(yaml_path)
-        return cls(**yaml_overrides)
+    def load(cls, yaml_path: str = SETTINGS_YML_PATH) -> "Settings":
+        """
+        Loads application settings merging .env credentials with config/settings.yml
+        as the authoritative single source of truth.
+        """
+        yaml_settings = _load_yaml_settings(yaml_path)
+        return cls(**yaml_settings)
 
     @field_validator("kite_api_key", "kite_api_secret", "kite_access_token", "discord_webhook_url")
     @classmethod
@@ -173,9 +190,5 @@ class Settings(BaseSettings):
 
 
 # Singleton getter — imported or instantiated when needed
-def get_settings(yaml_path: str = SETTINGS_YAML_PATH) -> Settings:
+def get_settings(yaml_path: str = SETTINGS_YML_PATH) -> Settings:
     return Settings.load(yaml_path=yaml_path)
-
-
-
-

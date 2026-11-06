@@ -33,13 +33,33 @@ import sys
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config.settings import get_settings
+
 CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_2026.csv")
 HTML_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_report_2026.html")
 
 
-def generate_report():
-    alt_csv = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_latest.csv")
-    csv_to_use = alt_csv if os.path.exists(alt_csv) else CSV_PATH
+def generate_report(csv_path: str | None = None, html_path: str | None = None, timeframe_label: str | None = None):
+    try:
+        cfg = get_settings()
+        lot_size = cfg.lot_size
+        default_interval = cfg.candle_interval_minutes
+    except Exception:
+        lot_size = 65
+        default_interval = 5
+
+    tf_label = timeframe_label or f"{default_interval}-min"
+
+    if csv_path:
+        csv_to_use = csv_path
+    elif os.path.exists(CSV_PATH):
+        csv_to_use = CSV_PATH
+    else:
+        alt_csv = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_latest.csv")
+        csv_to_use = alt_csv if os.path.exists(alt_csv) else CSV_PATH
+
+    target_html = html_path or HTML_PATH
 
     if not os.path.exists(csv_to_use):
         print(f"Error: Neither {CSV_PATH} nor {alt_csv} found. Please run scripts/run_backtest.py first.")
@@ -51,9 +71,10 @@ def generate_report():
         return
 
     # Datetime and duration parsing
+    interval_mins = int(tf_label.replace("-min", "")) if "-min" in tf_label else default_interval
     df["dt"] = pd.to_datetime(df["date"])
     df["weekday"] = df["dt"].dt.day_name()
-    df["holding_mins"] = df["holding_bars"] * 3
+    df["holding_mins"] = df["holding_bars"] * interval_mins
 
     entry_dt = pd.to_datetime(df["entry_time"])
     df["entry_hour"] = entry_dt.dt.hour
@@ -78,7 +99,7 @@ def generate_report():
 
     # Premium & Margin (1% of Spot)
     df["est_entry_prem"] = (df["entry_spot"] * 0.01).round(1)
-    df["margin_used"] = (df["est_entry_prem"] * 65).round(2)
+    df["margin_used"] = (df["est_entry_prem"] * lot_size).round(2)
     df["est_exit_prem"] = (df["est_entry_prem"] + df["opt_points"]).round(1)
     avg_margin_per_trade = df["margin_used"].mean()
     roi_margin = (total_pnl / avg_margin_per_trade * 100) if avg_margin_per_trade else 0
@@ -481,8 +502,8 @@ def generate_report():
 <div class="container">
     <header>
         <div>
-            <h1>📊 NIFTY Options Buying Strategy v9</h1>
-            <div class="subtitle">Backtest Ledger & Performance Intelligence • 2026-01-01 to 2026-11-06 (3-min timeframe, 65 qty)</div>
+            <h1>📊 NIFTY Options Buying Strategy v9 ({tf_label})</h1>
+            <div class="subtitle">Backtest Ledger & Performance Intelligence • 2026-01-01 to 2026-11-06 ({tf_label} timeframe, {lot_size} qty)</div>
         </div>
         <div class="header-tag">Strategy: NIFTY_V9</div>
     </header>
@@ -684,7 +705,7 @@ def generate_report():
                     <th onclick="sortTable(7)">Spot Price ⬍</th>
                     <th onclick="sortTable(8)">Est. Entry (1%) ⬍</th>
                     <th onclick="sortTable(9)">Est. Exit ⬍</th>
-                    <th onclick="sortTable(10)">Margin (65 Qty) ⬍</th>
+                    <th onclick="sortTable(10)">Margin ({lot_size} Qty) ⬍</th>
                     <th onclick="sortTable(11)">Net P&L (₹) ⬍</th>
                     <th onclick="sortTable(12)">Exit Reason ⬍</th>
                 </tr>
@@ -836,18 +857,24 @@ def generate_report():
 </html>
 """
 
-    if os.path.exists(HTML_PATH):
+    if os.path.exists(target_html):
         try:
-            os.remove(HTML_PATH)
-            print(f"Old report deleted: {HTML_PATH}")
+            os.remove(target_html)
+            print(f"Old report deleted: {target_html}")
         except Exception as exc:
             print(f"Warning: Could not remove old HTML report: {exc}")
 
-    with open(HTML_PATH, "w", encoding="utf-8") as f:
+    with open(target_html, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    print(f"\nAdvanced HTML Report successfully generated at:\n  file:///{os.path.abspath(HTML_PATH)}")
+    print(f"\nAdvanced HTML Report successfully generated at:\n  file:///{os.path.abspath(target_html)}")
 
 
 if __name__ == "__main__":
-    generate_report()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", default=None)
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--timeframe", default=None)
+    args = parser.parse_args()
+    generate_report(csv_path=args.csv, html_path=args.output, timeframe_label=args.timeframe)

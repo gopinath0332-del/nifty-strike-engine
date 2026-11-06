@@ -22,7 +22,7 @@ def test_yaml_settings_parsing() -> None:
     assert data["rsi_length"] == 14
     assert data["bb_length"] == 20
     assert data["bb_mult"] == 2.0
-    assert data["candle_interval_minutes"] == 3
+    assert data["candle_interval_minutes"] == 5
     assert data["entry_cutoff_time"] == "14:45"
     assert data["eod_exit_time"] == "15:00"
 

@@ -22,7 +22,7 @@ indicators:
   supertrend:
     atr_period: 10
     factor: 3.0
-    buffer_points: 5.0              # Min points penetration to flip trend (filters noise/whipsaw)
+    buffer_points: 0.0              # Standard TradingView default (no offset)
   rsi:
     length: 14
   bollinger_bands:
@@ -31,7 +31,7 @@ indicators:
 
 # Session Timing (IST)
 timing:
-  candle_interval_minutes: 3
+  candle_interval_minutes: 5
   entry_cutoff_time: "14:45" # No new entries after 14:45 IST
   eod_exit_time: "15:00" # Hard force-close all positions at 15:00 IST
 

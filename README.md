@@ -1,6 +1,6 @@
 # Nifty Strike Engine
 
-Algorithmic trading engine for **NIFTY 50 Options Buying** on a **3-minute timeframe**, converted from the TradingView Pine Script strategy *NIFTY Options Buying Strategy v9*.
+Algorithmic trading engine for **NIFTY 50 Options Buying** on a **5-minute timeframe** (configurable), converted from the TradingView Pine Script strategy *NIFTY Options Buying Strategy v9*.
 
 Built with **Python**, **Zerodha Kite Connect**, and designed to run headlessly on a **Raspberry Pi 5** production server.
 
@@ -12,7 +12,7 @@ Built with **Python**, **Zerodha Kite Connect**, and designed to run headlessly 
 |---|---|
 | **Instrument** | NIFTY 50 Index Options (NFO) |
 | **Strategy Type** | Options Buying only (CE / PE) |
-| **Timeframe** | 3-minute candles |
+| **Timeframe** | 5-minute candles (configured in `config/settings.yml`) |
 | **Trade Frequency** | **Maximum 1 trade per day** (CE **or** PE, never both) |
 | **Contract** | Current-week expiry (rolls to next week if today is expiry day) |
 | **Lot Size** | Fixed **65 units** (1 contract) |

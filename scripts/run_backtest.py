@@ -43,21 +43,24 @@ from src.indicators import apply_all
 from src.signal_engine import SignalEngine
 from src.strike_selector import select_strike
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "nifty_3min_2026.csv")
-
-
 def run_backtest():
-    if not os.path.exists(DATA_FILE):
-        print(f"Data file not found at {DATA_FILE}. Please run scripts/fetch_historical.py first.")
+    cfg = get_settings()
+    interval_str = f"{cfg.candle_interval_minutes}minute" if cfg.candle_interval_minutes != 3 else "3min"
+    data_file = os.path.join(os.path.dirname(__file__), "..", "data", f"nifty_{interval_str}_2026.csv")
+
+    if not os.path.exists(data_file):
+        # Fallback to alternate naming convention
+        alt_file = os.path.join(os.path.dirname(__file__), "..", "data", f"nifty_{cfg.candle_interval_minutes}min_2026.csv")
+        data_file = alt_file if os.path.exists(alt_file) else data_file
+
+    if not os.path.exists(data_file):
+        print(f"Data file not found at {data_file}. Please run scripts/fetch_historical.py first.")
         return
 
-    print("Loading historical candle data...")
-    df = pd.read_csv(DATA_FILE)
+    print(f"Loading historical {cfg.candle_interval_minutes}-minute candle data from {data_file}...")
+    df = pd.read_csv(data_file)
     df["datetime"] = pd.to_datetime(df["date"])
     df["date"] = df["datetime"].dt.date
-
-    # Load configuration
-    cfg = get_settings()
 
     print("Calculating technical indicators (Supertrend, RSI, Bollinger Bands, Traditional Pivots)...")
     df = apply_all(
@@ -213,17 +216,19 @@ def run_backtest():
 
     # Save detailed trade ledger to CSV (graceful fallback if Excel has the file open)
     ledger_path = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_2026.csv")
+    saved_csv = ledger_path
     try:
         trades_df.to_csv(ledger_path, index=False)
         print(f"Detailed trade ledger saved to: {ledger_path}")
     except PermissionError:
         alt_path = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_latest.csv")
         trades_df.to_csv(alt_path, index=False)
+        saved_csv = alt_path
         print(f"[Notice] backtest_trades_2026.csv is open in Excel; saved to: {alt_path}")
 
     # Generate HTML report automatically
     from scripts.generate_html_report import generate_report
-    generate_report()
+    generate_report(csv_path=saved_csv)
 
     # Display monthly breakdown
     trades_df["month"] = pd.to_datetime(trades_df["date"]).dt.strftime("%Y-%m")

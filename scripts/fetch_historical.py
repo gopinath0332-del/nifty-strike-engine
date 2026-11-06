@@ -39,8 +39,9 @@ OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "nifty_3min_
 
 
 def fetch_all_candles(
-    start_date: date = date(2025, 12, 20),  # extra days prior to Jan 1 for indicators warmup & previous day pivot
+    start_date: date = date(2025, 12, 20),
     end_date: date | None = None,
+    interval: str = "3minute",
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now(tz=IST).date()
@@ -53,7 +54,7 @@ def fetch_all_candles(
         raise ValueError("Missing KITE_API_KEY or KITE_ACCESS_TOKEN in .env")
 
     kite = build_authenticated_kite(api_key, access_token)
-    logger.info("Fetching NIFTY 3-min historical candles from %s to %s...", start_date, end_date)
+    logger.info("Fetching NIFTY %s historical candles from %s to %s...", interval, start_date, end_date)
 
     all_records = []
     current_start = start_date
@@ -70,7 +71,7 @@ def fetch_all_candles(
                 instrument_token=NIFTY_TOKEN,
                 from_date=dt_from,
                 to_date=dt_to,
-                interval="3minute",
+                interval=interval,
                 continuous=False,
                 oi=False,
             )
@@ -88,17 +89,21 @@ def fetch_all_candles(
         return pd.DataFrame()
 
     df = pd.DataFrame(all_records)
-    # Convert date to datetime IST
     df["date"] = pd.to_datetime(df["date"])
     df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
     df["date_only"] = df["date"].dt.date
 
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    df.to_csv(OUTPUT_FILE, index=False)
-    logger.info("Saved %d total candles to %s", len(df), OUTPUT_FILE)
+    out_file = os.path.join(os.path.dirname(__file__), "..", "data", f"nifty_{interval}_2026.csv")
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+    df.to_csv(out_file, index=False)
+    logger.info("Saved %d total candles to %s", len(df), out_file)
     return df
 
 
 if __name__ == "__main__":
-    fetch_all_candles()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--interval", default="3minute", choices=["3minute", "5minute", "minute", "15minute"])
+    args = parser.parse_args()
+    fetch_all_candles(interval=args.interval)
 
