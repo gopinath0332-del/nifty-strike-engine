@@ -1,5 +1,9 @@
 # Secrets — never commit
 .env
+*serviceAccount*.json
+*service_account*.json
+serviceAccountKey.json
+config/*.json
 
 # Python
 __pycache__/

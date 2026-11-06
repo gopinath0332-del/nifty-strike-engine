@@ -45,6 +45,7 @@ from kiteconnect import KiteTicker
 from config.settings import Settings
 from src.candle_builder import Candle, CandleBuilder
 from src.discord_notifier import DiscordNotifier
+from src.firestore_service import FirestoreService
 from src.indicators import apply_all
 from src.kite_auth import build_authenticated_kite
 from src.order_manager import OrderManager
@@ -82,6 +83,10 @@ class SessionManager:
             webhook_url=settings.discord_webhook_url,
             live_order_placement=settings.live_order_placement,
         )
+        self._firestore = FirestoreService(
+            credentials_path=settings.firestore_credentials_path,
+            collection_name=settings.firestore_collection,
+        )
         self._engine = SignalEngine(
             entry_cutoff=time(*settings.entry_cutoff_hhmm),
             eod_exit=time(*settings.eod_exit_hhmm),
@@ -92,6 +97,8 @@ class SessionManager:
             notifier=self._notifier,
             lot_size=settings.lot_size,
             live_order_placement=settings.live_order_placement,
+            strategy_name=settings.strategy_name,
+            firestore_service=self._firestore,
         )
         self._candle_builder = CandleBuilder(
             interval_minutes=settings.candle_interval_minutes

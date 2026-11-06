@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     bb_length: int = 20
     bb_mult: float = 2.0
 
-    # ---- Logging ---------------------------------------------
+    # ---- Strategy & Logging ----------------------------------
+    strategy_name: str = "NIFTY Options Buying Strategy v9"
+    firestore_credentials_path: str = "config/serviceAccountKey.json"
+    firestore_collection: str = "nifty"
     log_level: str = "INFO"
 
     # ---- Session Timing (IST) --------------------------------

@@ -38,6 +38,7 @@ except Exception:
 from kiteconnect import KiteConnect
 
 from src.discord_notifier import DiscordNotifier
+from src.firestore_service import FirestoreService
 from src.signal_engine import SignalEngine
 from src.strike_selector import select_strike
 
@@ -64,16 +65,21 @@ class OrderManager:
         notifier: DiscordNotifier,
         lot_size: int = 65,
         live_order_placement: bool = False,
+        strategy_name: str = "NIFTY Options Buying Strategy v9",
+        firestore_service: FirestoreService | None = None,
     ) -> None:
         self._kite   = kite
         self._engine = signal_engine
         self._notify = notifier
         self._qty    = lot_size
         self._live   = live_order_placement
+        self._strategy_name = strategy_name
+        self._firestore = firestore_service
 
         # In-memory position tracking
         self._open_symbol: str | None   = None
         self._entry_price: float | None = None
+        self._current_trade_id: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,10 +141,24 @@ class OrderManager:
             candle_time=candle_time,
         )
 
+        # Update Firestore
+        if self._firestore and self._current_trade_id:
+            pnl = None
+            if self._entry_price is not None:
+                pnl = round((exit_price - self._entry_price) * self._qty, 2)
+            self._firestore.record_exit(
+                trade_id=self._current_trade_id,
+                exit_time=candle_time,
+                exit_price=exit_price,
+                exit_reason=reason,
+                pnl=pnl,
+            )
+
         # Update state
         self._engine.on_exit_filled()
         self._open_symbol = None
         self._entry_price = None
+        self._current_trade_id = None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -193,6 +213,26 @@ class OrderManager:
         r1       = indicators.get("r1", 0.0)
         s1       = indicators.get("s1", 0.0)
         strike   = int(symbol[-8:-2]) if len(symbol) >= 8 else 0
+
+        # Unique Trade ID
+        trade_id = f"TRADE_{candle_time.astimezone(IST).strftime('%Y%m%d_%H%M%S')}_{option_type}"
+        self._current_trade_id = trade_id
+
+        # Persist entry to Firestore
+        if self._firestore:
+            self._firestore.record_entry(
+                trade_id=trade_id,
+                strategy_name=self._strategy_name,
+                symbol=symbol,
+                option_type=option_type,
+                strike=strike,
+                spot_price=spot,
+                lot_size=self._qty,
+                entry_time=candle_time,
+                entry_price=fill_price or spot,
+                indicators=indicators,
+                live_trade=self._live,
+            )
 
         if option_type == "CE":
             self._notify.ce_entry(
