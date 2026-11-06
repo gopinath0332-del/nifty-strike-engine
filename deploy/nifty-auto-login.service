@@ -1,0 +1,20 @@
+"""
+deploy/nifty-auto-login.service
+===============================
+Systemd service to run Zero-Touch Zerodha Auto-Login at morning boot or via timer.
+"""
+
+[Unit]
+Description=Nifty Strike Engine — Morning Auto-Login
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/nifty-strike-engine
+ExecStart=/root/venv/bin/python scripts/auto_login.py --restart-service
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nifty-auto-login
+

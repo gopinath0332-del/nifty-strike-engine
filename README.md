@@ -110,12 +110,28 @@ LIVE_ORDER_PLACEMENT=false            # start in SIMULATION mode
 python -m pytest tests/ -v
 ```
 
-### 5. Morning Token Refresh
-Zerodha access tokens expire at midnight every day. Run this before **09:15 IST**:
+### 5. Morning Token Refresh Options
+
+You have two choices for refreshing the daily token:
+
+#### Option A: Zero-Touch Automated Login (Recommended)
+Add your Zerodha credentials & TOTP secret to `.env`:
+```dotenv
+ZERODHA_USER_ID=your_client_id
+ZERODHA_PASSWORD=your_password
+ZERODHA_TOTP_SECRET=your_totp_secret_key
+```
+Then run:
+```bash
+python scripts/auto_login.py
+```
+This runs 100% headlessly, computes the 2FA code via `pyotp`, fetches the new token, writes it to `.env`, and sends a Discord alert.
+
+#### Option B: Interactive Browser Refresh
 ```bash
 python scripts/refresh_token.py
 ```
-Follow the interactive prompt: open the URL, log in, paste the redirect URL. It updates `.env` automatically.
+Follow the interactive prompt: open the URL, log in, paste the redirect URL.
 
 ### 6. Start the engine
 ```bash
@@ -169,8 +185,23 @@ sudo journalctl -u nifty-strike-engine -f
 sudo systemctl stop nifty-strike-engine
 ```
 
-### Step 4 — Morning token cron (optional helper)
-Add a reminder or run `python scripts/refresh_token.py` on the Pi each morning at 09:00 IST before starting the service.
+### Step 4 — Set Up Morning 08:50 AM Automated Login
+Enable the systemd timer so the Raspberry Pi wakes up every weekday morning at 08:50 AM IST, logs in using `pyotp`, refreshes the token, restarts the engine service, and pings your Discord:
+
+```bash
+# Copy timer and service
+sudo cp deploy/nifty-auto-login.service /etc/systemd/system/
+sudo cp deploy/nifty-auto-login.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Enable and start the timer
+sudo systemctl enable --now nifty-auto-login.timer
+
+# Verify timer is scheduled
+sudo systemctl list-timers nifty-auto-login.timer
+```
+
+Now you don't have to touch anything while playing badminton—the bot logs in and starts itself before market open!
 
 ---
 

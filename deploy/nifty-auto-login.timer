@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Nifty Auto-Login every weekday morning at 08:50 AM IST
+
+[Timer]
+# Runs at 08:50 AM IST Monday through Friday
+OnCalendar=Mon..Fri *-*-* 08:50:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
