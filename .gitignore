@@ -33,8 +33,13 @@ ENV/
 logs/
 *.log
 
+# Data & Backtest artifacts
+data/
+*.csv
+
 # Test artifacts
 .pytest_cache/
 .coverage
 htmlcov/
+*.csv
 

@@ -44,63 +44,72 @@ def supertrend(
         bull_trend  — bool: direction == -1
         bear_trend  — bool: direction == +1
 
-    Mirrors: ``[st, direction] = ta.supertrend(factor, atrPeriod)``
-    Pine uses direction < 0 → bull, direction > 0 → bear.
+    Mirrors Pine Script: ``[st, direction] = ta.supertrend(factor, atrPeriod)``
+    where direction < 0 is Bullish (-1) and direction > 0 is Bearish (+1).
     """
-    high  = df["high"]
-    low   = df["low"]
-    close = df["close"]
-    n     = len(df)
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
+    n = len(df)
 
-    # ATR (Wilder's smoothed)
-    tr = pd.concat(
-        [
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low  - close.shift(1)).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
+    if n < atr_period:
+        df["st"] = np.nan
+        df["st_direction"] = np.nan
+        df["bull_trend"] = False
+        df["bear_trend"] = False
+        return df
 
-    atr = tr.ewm(alpha=1 / atr_period, min_periods=atr_period, adjust=False).mean()
+    # True Range (TR)
+    tr = np.zeros(n)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        tr[i] = max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
 
-    hl2       = (high + low) / 2
+    # Wilder's Smoothing for ATR (matches TradingView ta.atr)
+    atr = np.zeros(n)
+    atr[atr_period - 1] = np.mean(tr[:atr_period])
+    for i in range(atr_period, n):
+        atr[i] = (atr[i - 1] * (atr_period - 1) + tr[i]) / atr_period
+
+    hl2 = (high + low) / 2
     upper_raw = hl2 + factor * atr
     lower_raw = hl2 - factor * atr
 
-    upper = upper_raw.copy()
-    lower = lower_raw.copy()
-    direction = pd.Series(np.nan, index=df.index)
-    st_line   = pd.Series(np.nan, index=df.index)
+    final_upper = np.zeros(n)
+    final_lower = np.zeros(n)
+    st_line = np.zeros(n)
+    direction = np.ones(n)  # default 1 (bearish)
 
-    for i in range(1, n):
-        # Upper band
-        if upper_raw.iloc[i] < upper.iloc[i - 1] or close.iloc[i - 1] > upper.iloc[i - 1]:
-            upper.iloc[i] = upper_raw.iloc[i]
+    # Initialize at first valid ATR index
+    init_idx = atr_period - 1
+    final_upper[init_idx] = upper_raw[init_idx]
+    final_lower[init_idx] = lower_raw[init_idx]
+
+    for i in range(init_idx + 1, n):
+        # Upper band ratcheting
+        if upper_raw[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]:
+            final_upper[i] = upper_raw[i]
         else:
-            upper.iloc[i] = upper.iloc[i - 1]
+            final_upper[i] = final_upper[i - 1]
 
-        # Lower band
-        if lower_raw.iloc[i] > lower.iloc[i - 1] or close.iloc[i - 1] < lower.iloc[i - 1]:
-            lower.iloc[i] = lower_raw.iloc[i]
+        # Lower band ratcheting
+        if lower_raw[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]:
+            final_lower[i] = lower_raw[i]
         else:
-            lower.iloc[i] = lower.iloc[i - 1]
+            final_lower[i] = final_lower[i - 1]
 
-        # Direction
-        prev_dir = direction.iloc[i - 1]
-        if pd.isna(prev_dir):
-            direction.iloc[i] = 1
-        elif prev_dir == 1:
-            direction.iloc[i] = -1 if close.iloc[i] > upper.iloc[i] else 1
+        # Trend direction
+        if direction[i - 1] == 1:
+            direction[i] = -1 if close[i] > final_upper[i] else 1
         else:
-            direction.iloc[i] = 1 if close.iloc[i] < lower.iloc[i] else -1
+            direction[i] = 1 if close[i] < final_lower[i] else -1
 
-        st_line.iloc[i] = lower.iloc[i] if direction.iloc[i] == -1 else upper.iloc[i]
+        st_line[i] = final_lower[i] if direction[i] == -1 else final_upper[i]
 
-    df["st"]           = st_line
+    df["st"] = st_line
     df["st_direction"] = direction
-    df["bull_trend"]   = direction == -1
-    df["bear_trend"]   = direction == 1
+    df["bull_trend"] = direction == -1
+    df["bear_trend"] = direction == 1
     return df
 
 
