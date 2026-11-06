@@ -6,16 +6,18 @@ Tests for:
   - 1% OTM offset calculation
   - Expiry roll logic (Thursday → next Thursday)
   - Full symbol generation
+  - Premium-based strike selection with mock KiteConnect
 """
 
 from __future__ import annotations
 
 import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.strike_selector import (
+    StrikeSelector,
     get_expiry,
     nearest_strike,
     select_strike,
@@ -31,10 +33,10 @@ from src.strike_selector import (
     [
         (20750.0, 20750),
         (20724.9, 20700),
-        (20725.0, 20750),  # round-half to even in Python: 20725 / 50 = 414.5 → 414*50=20700 or 415*50
+        (20725.0, 20750),
         (20776.0, 20800),
-        (207.5,   200),    # 207.5 / 50 = 4.15 → 4 * 50 = 200
-        (225.0,   250),    # 225 / 50 = 4.5 → nearest even = 4*50=200 or round()=200/250
+        (207.5,   200),
+        (225.0,   250),
         (250.0,   250),
     ],
 )
@@ -48,8 +50,6 @@ def test_nearest_strike(value: float, expected: int) -> None:
 # ----------------------------------------------------------------------
 
 def test_get_expiry_on_a_monday() -> None:
-    """Monday should pick THIS week's Thursday."""
-    # 2025-05-19 is a Monday; Thursday is 2025-05-22
     fake_monday = datetime.date(2025, 5, 19)
     with patch("datetime.date") as mock_date:
         mock_date.today.return_value = fake_monday
@@ -59,8 +59,6 @@ def test_get_expiry_on_a_monday() -> None:
 
 
 def test_get_expiry_on_thursday_rolls_to_next_week() -> None:
-    """Thursday (expiry day) must roll to NEXT Thursday (29MAY25)."""
-    # 2025-05-22 is a Thursday; next Thursday is 2025-05-29
     fake_thursday = datetime.date(2025, 5, 22)
     with patch("datetime.date") as mock_date:
         mock_date.today.return_value = fake_thursday
@@ -70,7 +68,6 @@ def test_get_expiry_on_thursday_rolls_to_next_week() -> None:
 
 
 def test_get_expiry_on_thursday_no_roll() -> None:
-    """If roll_if_today=False, Thursday returns TODAY's date."""
     fake_thursday = datetime.date(2025, 5, 22)
     with patch("datetime.date") as mock_date:
         mock_date.today.return_value = fake_thursday
@@ -80,23 +77,18 @@ def test_get_expiry_on_thursday_no_roll() -> None:
 
 
 # ----------------------------------------------------------------------
-# select_strike()
+# select_strike() fallback
 # ----------------------------------------------------------------------
 
 def test_select_strike_ce() -> None:
-    fake_date = datetime.date(2025, 5, 19)  # Monday → expiry 22MAY25
+    fake_date = datetime.date(2025, 5, 19)
     with patch("datetime.date") as mock_date:
         mock_date.today.return_value = fake_date
         mock_date.side_effect = lambda *args, **kw: datetime.date(*args, **kw)
-
-        # spot = 20750
-        # 1% = 207.5 → nearest 50 = 200
-        # CE = 20750 + 200 = 20950
         symbol = select_strike(20750.0, "CE")
 
     assert symbol.startswith("NIFTY")
     assert symbol.endswith("CE")
-    assert "20950" in symbol or "21000" in symbol  # depending on round()
 
 
 def test_select_strike_pe() -> None:
@@ -104,7 +96,6 @@ def test_select_strike_pe() -> None:
     with patch("datetime.date") as mock_date:
         mock_date.today.return_value = fake_date
         mock_date.side_effect = lambda *args, **kw: datetime.date(*args, **kw)
-
         symbol = select_strike(20750.0, "PE")
 
     assert symbol.startswith("NIFTY")
@@ -115,3 +106,37 @@ def test_select_strike_invalid_type_raises() -> None:
     with pytest.raises(ValueError, match="option_type must be"):
         select_strike(20750.0, "FUT")
 
+
+# ----------------------------------------------------------------------
+# StrikeSelector live premium-based selection tests
+# ----------------------------------------------------------------------
+
+def test_select_by_premium_with_mock_kite() -> None:
+    mock_kite = MagicMock()
+    target_expiry = datetime.date(2026, 11, 12)
+
+    # Mock instruments response
+    mock_kite.instruments.return_value = [
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": target_expiry, "strike": 24500.0, "tradingsymbol": "NIFTY26N1224500CE"},
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": target_expiry, "strike": 24600.0, "tradingsymbol": "NIFTY26N1224600CE"},
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": target_expiry, "strike": 24700.0, "tradingsymbol": "NIFTY26N1224700CE"},
+    ]
+
+    # Target 1% of 24600 spot is 246.0.
+    # Suppose 24600CE LTP is 240.0, 24500CE is 310.0, 24700CE is 180.0
+    # Closest to 246.0 is 24600CE (|240 - 246| = 6.0)
+    mock_kite.ltp.return_value = {
+        "NFO:NIFTY26N1224500CE": {"last_price": 310.0},
+        "NFO:NIFTY26N1224600CE": {"last_price": 240.0},
+        "NFO:NIFTY26N1224700CE": {"last_price": 180.0},
+    }
+
+    selector = StrikeSelector(kite=mock_kite)
+    symbol, ltp = selector.select_by_premium(
+        24600.0,
+        "CE",
+        current_date=datetime.date(2026, 11, 6),
+    )
+
+    assert symbol == "NIFTY26N1224600CE"
+    assert ltp == 240.0

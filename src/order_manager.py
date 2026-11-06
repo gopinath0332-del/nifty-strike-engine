@@ -40,7 +40,7 @@ from kiteconnect import KiteConnect
 from src.discord_notifier import DiscordNotifier
 from src.firestore_service import FirestoreService
 from src.signal_engine import SignalEngine
-from src.strike_selector import select_strike
+from src.strike_selector import StrikeSelector, select_strike
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ class OrderManager:
         self._live   = live_order_placement
         self._strategy_name = strategy_name
         self._firestore = firestore_service
+        self._strike_selector = StrikeSelector(kite=kite)
 
         # In-memory position tracking
         self._open_symbol: str | None   = None
@@ -94,14 +95,14 @@ class OrderManager:
         return self._entry_price
 
     def handle_ce_entry(self, spot: float, candle_time: datetime, indicators: dict) -> None:
-        """Buy a CE (call) option based on current spot price."""
-        symbol = select_strike(spot, "CE")
-        self._buy(symbol, "CE", spot, candle_time, indicators)
+        """Buy a CE (call) option based on 1% target premium of current spot price."""
+        symbol, ltp = self._strike_selector.select_by_premium(spot, "CE")
+        self._buy(symbol, "CE", spot, candle_time, indicators, estimated_ltp=ltp)
 
     def handle_pe_entry(self, spot: float, candle_time: datetime, indicators: dict) -> None:
-        """Buy a PE (put) option based on current spot price."""
-        symbol = select_strike(spot, "PE")
-        self._buy(symbol, "PE", spot, candle_time, indicators)
+        """Buy a PE (put) option based on 1% target premium of current spot price."""
+        symbol, ltp = self._strike_selector.select_by_premium(spot, "PE")
+        self._buy(symbol, "PE", spot, candle_time, indicators, estimated_ltp=ltp)
 
     def handle_exit(self, reason: str, exit_price: float, candle_time: datetime) -> None:
         """Close the currently open option position."""
@@ -112,6 +113,7 @@ class OrderManager:
         symbol = self._open_symbol
         logger.info("Exiting position %s | reason=%s | price=%.2f", symbol, reason, exit_price)
 
+        opt_exit_price = exit_price
         if self._live:
             try:
                 order_id = self._kite.place_order(
@@ -125,19 +127,28 @@ class OrderManager:
                     validity=KiteConnect.VALIDITY_DAY,
                 )
                 logger.info("LIVE exit order placed: order_id=%s", order_id)
+                fill = self._fetch_fill_price(order_id)
+                if fill is not None:
+                    opt_exit_price = fill
             except Exception as exc:
                 logger.error("Exit order failed: %s", exc)
                 self._notify.error(f"Exit order failed for {symbol}: {exc}")
                 return
         else:
             logger.info("[SIMULATION] Exit order skipped (LIVE_ORDER_PLACEMENT=false)")
+            try:
+                ltp_resp = self._kite.ltp(f"NFO:{symbol}")
+                if f"NFO:{symbol}" in ltp_resp:
+                    opt_exit_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", exit_price))
+            except Exception:
+                pass
 
         # Notify Discord
         self._notify.exit_signal(
             symbol=symbol,
             reason=reason,
             entry_price=self._entry_price,
-            exit_price=exit_price,
+            exit_price=opt_exit_price,
             candle_time=candle_time,
         )
 
@@ -145,11 +156,11 @@ class OrderManager:
         if self._firestore and self._current_trade_id:
             pnl = None
             if self._entry_price is not None:
-                pnl = round((exit_price - self._entry_price) * self._qty, 2)
+                pnl = round((opt_exit_price - self._entry_price) * self._qty, 2)
             self._firestore.record_exit(
                 trade_id=self._current_trade_id,
                 exit_time=candle_time,
-                exit_price=exit_price,
+                exit_price=opt_exit_price,
                 exit_reason=reason,
                 pnl=pnl,
             )
@@ -171,6 +182,7 @@ class OrderManager:
         spot: float,
         candle_time: datetime,
         indicators: dict,
+        estimated_ltp: float | None = None,
     ) -> None:
         logger.info(
             "Placing %s buy | symbol=%s qty=%d live=%s",
@@ -200,6 +212,7 @@ class OrderManager:
                 return
         else:
             logger.info("[SIMULATION] Buy order skipped (LIVE_ORDER_PLACEMENT=false)")
+            fill_price = estimated_ltp
 
         # Update state regardless of mode so logic continues correctly
         self._open_symbol = symbol

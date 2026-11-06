@@ -65,10 +65,9 @@ def generate_report():
     pe_win_rate = (pe_wins / pe_total * 100) if pe_total else 0
     pe_pnl = pe_df["pnl"].sum()
 
-    # Margin approximation: Option buying premium margin = Lot Size (65) * Entry Premium (~1% of Spot / 2 ~ 120-150 pts)
-    # Typical NIFTY weekly 1% OTM option premium is ~0.5% - 0.7% of index (approx 120-180 points).
-    # For realistic representation, we estimate Option Entry Premium ~ Spot * 0.006 (around 140 pts)
-    df["est_entry_prem"] = (df["entry_spot"] * 0.006).round(1)
+    # Entry Premium = 1% of the underlying NIFTY spot price (as per REQUIREMENT.md)
+    # Margin used = Lot Size (65) * Entry Premium
+    df["est_entry_prem"] = (df["entry_spot"] * 0.01).round(1)
     df["margin_used"] = (df["est_entry_prem"] * 65).round(2)
     df["est_exit_prem"] = (df["est_entry_prem"] + df["opt_points"]).round(1)
 
