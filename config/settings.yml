@@ -1,0 +1,36 @@
+# ============================================================
+# Nifty Strike Engine — Strategy & System Settings
+# ============================================================
+
+# Trade Settings
+trade:
+  lot_size: 65 # NIFTY current lot size (units per contract)
+  max_trades_per_day: 1 # Only 1 trade per day — CE OR PE, never both
+
+# Strategy & Database
+strategy:
+  name: "NIFTY_OPTIONS_BUY_V9"
+  firestore_credentials_path: "config/serviceAccountKey.json"
+  firestore_collection: "nifty"
+
+# Logging Level (DEBUG, INFO, WARNING, ERROR)
+logging:
+  level: "INFO"
+
+# Indicator Parameters (Pine Script defaults)
+indicators:
+  supertrend:
+    atr_period: 10
+    factor: 3.0
+  rsi:
+    length: 14
+  bollinger_bands:
+    length: 20
+    multiplier: 2.0
+
+# Session Timing (IST)
+timing:
+  candle_interval_minutes: 3
+  entry_cutoff_time: "14:45" # No new entries after 14:45 IST
+  eod_exit_time: "15:00" # Hard force-close all positions at 15:00 IST
+
