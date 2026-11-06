@@ -150,6 +150,7 @@ class OrderManager:
             entry_price=self._entry_price,
             exit_price=opt_exit_price,
             candle_time=candle_time,
+            qty=self._qty,
         )
 
         # Update Firestore
@@ -251,11 +252,13 @@ class OrderManager:
             self._notify.ce_entry(
                 symbol=symbol, strike=strike, spot=spot, qty=self._qty,
                 candle_time=candle_time, rsi=rsi, upper_bb=upper_bb, r1=r1,
+                entry_price=fill_price,
             )
         else:
             self._notify.pe_entry(
                 symbol=symbol, strike=strike, spot=spot, qty=self._qty,
                 candle_time=candle_time, rsi=rsi, lower_bb=lower_bb, s1=s1,
+                entry_price=fill_price,
             )
 
     def _fetch_fill_price(self, order_id: str) -> float | None:
