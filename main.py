@@ -15,30 +15,28 @@ orders will be placed but all Discord notifications will fire.
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 
-# Configure logging before any other imports
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("nifty_strike_engine.log", encoding="utf-8"),
-    ],
-)
+from src.logger import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("nifty_strike_engine")
 
 
 def main() -> None:
     # Validate settings eagerly (raises on bad/missing .env values)
     try:
-        from config.settings import settings
+        from config.settings import get_settings
+        settings = get_settings()
     except Exception as exc:
+        # Fallback console log if settings fails to load
+        setup_logger("INFO")
         logger.critical("Configuration error: %s", exc)
         sys.exit(1)
+
+    # Initialize full logging infrastructure with level from settings
+    setup_logger(settings.log_level)
 
     from src.session_manager import SessionManager
 

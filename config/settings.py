@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     bb_length: int = 20
     bb_mult: float = 2.0
 
+    # ---- Logging ---------------------------------------------
+    log_level: str = "INFO"
+
     # ---- Session Timing (IST) --------------------------------
     candle_interval_minutes: int = 3
     entry_cutoff_time: str = "14:45"
@@ -78,6 +81,8 @@ class Settings(BaseSettings):
         return int(h), int(m)
 
 
-# Singleton — imported everywhere
-settings = Settings()
+# Singleton getter — imported or instantiated when needed
+def get_settings() -> Settings:
+    return Settings()
+
 

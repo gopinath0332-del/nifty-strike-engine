@@ -51,6 +51,7 @@ from src.order_manager import OrderManager
 from src.signal_engine import SignalEngine
 
 logger = logging.getLogger(__name__)
+signals_logger = logging.getLogger("signals")
 NIFTY_TOKEN = 256265           # Kite instrument token for NIFTY 50 index
 
 # Minimum candles in the rolling buffer before signals are evaluated
@@ -259,6 +260,26 @@ class SessionManager:
 
             # Evaluate signals
             result = self._engine.evaluate(candle, indicators)
+
+            signals_logger.info(
+                "[CANDLE EVAL] Time=%s | Close=%.2f | Bull=%s Bear=%s | RSI=%.1f | "
+                "UpperBB=%.2f LowerBB=%.2f | R1=%.2f S1=%.2f | "
+                "Signals: CE_Entry=%s PE_Entry=%s Exit_CE=%s Exit_PE=%s (Reason='%s')",
+                ist_ts.strftime("%Y-%m-%d %H:%M:%S"),
+                candle.close,
+                indicators["bull_trend"],
+                indicators["bear_trend"],
+                indicators.get("rsi") or 0.0,
+                indicators.get("upper_bb") or 0.0,
+                indicators.get("lower_bb") or 0.0,
+                indicators.get("r1") or 0.0,
+                indicators.get("s1") or 0.0,
+                result.ce_entry,
+                result.pe_entry,
+                result.exit_ce,
+                result.exit_pe,
+                result.exit_reason,
+            )
 
             # Dispatch orders based on signals
             if result.exit_ce or result.exit_pe:
