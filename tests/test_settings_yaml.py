@@ -14,7 +14,7 @@ def test_yaml_settings_parsing() -> None:
     data = _load_yaml_settings("config/settings.yml")
     assert data["lot_size"] == 65
     assert data["max_trades_per_day"] == 1
-    assert data["strategy_name"] == "NIFTY_V9"
+    assert data["strategy_name"] == "NIFTY_OPTIONS_BUY_V9"
     assert data["firestore_collection"] == "nifty"
     assert data["log_level"] == "INFO"
     assert data["st_atr_period"] == 10

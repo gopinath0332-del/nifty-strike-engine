@@ -88,6 +88,12 @@ def perform_automated_login(
         )
     })
 
+    # Step 0: Hit the login page first to establish base cookies (kf_session, __cf_bm, etc.)
+    login_page_url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+    logger.info("Initializing session cookies...")
+    init_resp = session.get(login_page_url, timeout=15)
+    actual_login_url = init_resp.url
+
     # Step 1: Submit User ID & Password
     logger.info("Submitting login credentials for user: %s", user_id)
     login_url = "https://kite.zerodha.com/api/login"
@@ -117,8 +123,6 @@ def perform_automated_login(
             "user_id": user_id,
             "request_id": request_id,
             "twofa_value": twofa_pin,
-            "twofa_type": "totp",
-            "skip_session": "",
         },
         timeout=15,
     )
@@ -130,9 +134,9 @@ def perform_automated_login(
 
     logger.info("TOTP verification successful.")
 
-    # Step 3: Call Kite Connect app authorize endpoint to obtain redirect with request_token
-    auth_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
-    auth_resp = session.get(auth_url, allow_redirects=True, timeout=15)
+    # Step 3: Complete redirect flow with established session
+    final_auth_url = f"{actual_login_url}&skip_session=true"
+    auth_resp = session.get(final_auth_url, allow_redirects=True, timeout=15)
 
     final_url = auth_resp.url
     logger.debug("Final redirected URL: %s", final_url)
