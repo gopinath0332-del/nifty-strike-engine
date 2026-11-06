@@ -103,7 +103,7 @@ def fetch_all_candles(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interval", default="3minute", choices=["3minute", "5minute", "minute", "15minute"])
+    parser.add_argument("--interval", default="3minute", choices=["minute", "3minute", "5minute", "10minute", "15minute", "30minute"])
     args = parser.parse_args()
     fetch_all_candles(interval=args.interval)
 
