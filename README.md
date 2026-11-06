@@ -158,6 +158,10 @@ sudo python3 -m venv /root/venv
 sudo /root/venv/bin/pip install --upgrade pip
 sudo /root/venv/bin/pip install -r requirements.txt
 
+# Install Playwright Headless Chromium & system dependencies for Zero-Touch Morning Login
+sudo /root/venv/bin/playwright install chromium
+sudo /root/venv/bin/playwright install-deps chromium
+
 # Configure .env
 sudo cp .env.example .env
 sudo nano .env   # fill in your credentials
