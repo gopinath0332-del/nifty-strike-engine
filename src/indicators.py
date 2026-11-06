@@ -36,6 +36,7 @@ def supertrend(
     df: pd.DataFrame,
     atr_period: int = 10,
     factor: float = 3.0,
+    buffer_points: float = 0.0,
 ) -> pd.DataFrame:
     """
     Compute Supertrend and append columns:
@@ -98,11 +99,11 @@ def supertrend(
         else:
             final_lower[i] = final_lower[i - 1]
 
-        # Trend direction
+        # Trend direction with optional whipsaw buffer
         if direction[i - 1] == 1:
-            direction[i] = -1 if close[i] > final_upper[i] else 1
+            direction[i] = -1 if close[i] > (final_upper[i] + buffer_points) else 1
         else:
-            direction[i] = 1 if close[i] < final_lower[i] else -1
+            direction[i] = 1 if close[i] < (final_lower[i] - buffer_points) else -1
 
         st_line[i] = final_lower[i] if direction[i] == -1 else final_upper[i]
 
@@ -203,12 +204,13 @@ def apply_all(
     df: pd.DataFrame,
     st_atr_period: int = 10,
     st_factor: float = 3.0,
+    st_buffer_points: float = 0.0,
     rsi_length: int = 14,
     bb_length: int = 20,
     bb_mult: float = 2.0,
 ) -> pd.DataFrame:
     """Apply Supertrend, RSI, Bollinger Bands, and Pivot columns to df."""
-    df = supertrend(df, atr_period=st_atr_period, factor=st_factor)
+    df = supertrend(df, atr_period=st_atr_period, factor=st_factor, buffer_points=st_buffer_points)
     df = rsi(df, length=rsi_length)
     df = bollinger_bands(df, length=bb_length, mult=bb_mult)
     df = traditional_pivots(df)

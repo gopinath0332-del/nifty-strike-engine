@@ -64,6 +64,7 @@ def run_backtest():
         df,
         st_atr_period=cfg.st_atr_period,
         st_factor=cfg.st_factor,
+        st_buffer_points=cfg.st_buffer_points,
         rsi_length=cfg.rsi_length,
         bb_length=cfg.bb_length,
         bb_mult=cfg.bb_mult,

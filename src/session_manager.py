@@ -239,6 +239,7 @@ class SessionManager:
                 df,
                 st_atr_period=self._s.st_atr_period,
                 st_factor=self._s.st_factor,
+                st_buffer_points=self._s.st_buffer_points,
                 rsi_length=self._s.rsi_length,
                 bb_length=self._s.bb_length,
                 bb_mult=self._s.bb_mult,

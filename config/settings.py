@@ -68,6 +68,8 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
         parsed["st_atr_period"] = int(st["atr_period"])
     if "factor" in st:
         parsed["st_factor"] = float(st["factor"])
+    if "buffer_points" in st:
+        parsed["st_buffer_points"] = float(st["buffer_points"])
 
     rsi_elem = ind.get("rsi", {})
     if "length" in rsi_elem:
@@ -120,6 +122,7 @@ class Settings(BaseSettings):
     # ---- Indicator Parameters (defaults or from settings.yaml)
     st_atr_period: int = 10
     st_factor: float = 3.0
+    st_buffer_points: float = 5.0
     rsi_length: int = 14
     bb_length: int = 20
     bb_mult: float = 2.0
