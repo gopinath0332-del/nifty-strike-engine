@@ -24,11 +24,15 @@ HTML_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_repo
 
 
 def generate_report():
-    if not os.path.exists(CSV_PATH):
-        print(f"Error: {CSV_PATH} not found. Please run scripts/run_backtest.py first.")
+    # Check if latest CSV exists
+    alt_csv = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_latest.csv")
+    csv_to_use = alt_csv if os.path.exists(alt_csv) else CSV_PATH
+
+    if not os.path.exists(csv_to_use):
+        print(f"Error: Neither {CSV_PATH} nor {alt_csv} found. Please run scripts/run_backtest.py first.")
         return
 
-    df = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(csv_to_use)
     if df.empty:
         print("No trades found in CSV.")
         return
@@ -44,6 +48,22 @@ def generate_report():
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss else 0
     max_win = df["pnl"].max()
     max_loss = df["pnl"].min()
+
+    # CE vs PE breakdown
+    ce_df = df[df["option_type"] == "CE"]
+    pe_df = df[df["option_type"] == "PE"]
+
+    ce_total = len(ce_df)
+    ce_wins = len(ce_df[ce_df["pnl"] > 0])
+    ce_losses = len(ce_df[ce_df["pnl"] <= 0])
+    ce_win_rate = (ce_wins / ce_total * 100) if ce_total else 0
+    ce_pnl = ce_df["pnl"].sum()
+
+    pe_total = len(pe_df)
+    pe_wins = len(pe_df[pe_df["pnl"] > 0])
+    pe_losses = len(pe_df[pe_df["pnl"] <= 0])
+    pe_win_rate = (pe_wins / pe_total * 100) if pe_total else 0
+    pe_pnl = pe_df["pnl"].sum()
 
     # Margin approximation: Option buying premium margin = Lot Size (65) * Entry Premium (~1% of Spot / 2 ~ 120-150 pts)
     # Typical NIFTY weekly 1% OTM option premium is ~0.5% - 0.7% of index (approx 120-180 points).
@@ -202,25 +222,35 @@ def generate_report():
             <div class="card-val profit">₹{total_pnl:+,.2f}</div>
         </div>
         <div class="card">
-            <div class="card-label">Win Rate</div>
-            <div class="card-val">{win_rate:.1f}% <span style="font-size:14px; color:var(--text-muted);">({winning_trades}W / {losing_trades}L)</span></div>
+            <div class="card-label">Overall Win Rate</div>
+            <div class="card-val">{win_rate:.1f}% <span style="font-size:13px; color:var(--text-muted);">({winning_trades}W / {losing_trades}L)</span></div>
         </div>
         <div class="card">
-            <div class="card-label">Profit Factor</div>
-            <div class="card-val">{profit_factor}</div>
+            <div class="card-label">📈 CE Trades Breakdown</div>
+            <div class="card-val" style="color:var(--primary); font-size:20px;">
+                {ce_wins}W / {ce_losses}L <span style="font-size:14px; color:var(--text-muted);">({ce_win_rate:.1f}%)</span>
+                <div style="font-size:13px; margin-top:4px;" class="{'profit' if ce_pnl >= 0 else 'loss'}">Net: ₹{ce_pnl:+,.2f}</div>
+            </div>
         </div>
         <div class="card">
-            <div class="card-label">Max Drawdown</div>
-            <div class="card-val loss">₹{max_drawdown:,.2f}</div>
+            <div class="card-label">📉 PE Trades Breakdown</div>
+            <div class="card-val" style="color:var(--amber); font-size:20px;">
+                {pe_wins}W / {pe_losses}L <span style="font-size:14px; color:var(--text-muted);">({pe_win_rate:.1f}%)</span>
+                <div style="font-size:13px; margin-top:4px;" class="{'profit' if pe_pnl >= 0 else 'loss'}">Net: ₹{pe_pnl:+,.2f}</div>
+            </div>
         </div>
         <div class="card">
-            <div class="card-label">Avg Margin / Trade</div>
-            <div class="card-val">₹{avg_margin_per_trade:,.2f}</div>
+            <div class="card-label">Profit Factor & Drawdown</div>
+            <div class="card-val" style="font-size:18px;">
+                PF: <strong>{profit_factor}</strong>
+                <div style="font-size:13px; color:var(--red); margin-top:4px;">Max DD: ₹{max_drawdown:,.2f}</div>
+            </div>
         </div>
         <div class="card">
-            <div class="card-label">Max Win / Max Loss</div>
-            <div class="card-val" style="font-size:17px; margin-top:12px;">
-                <span class="profit">₹{max_win:+,.0f}</span> / <span class="loss">₹{max_loss:+,.0f}</span>
+            <div class="card-label">Margin & Extremes</div>
+            <div class="card-val" style="font-size:15px; margin-top:6px;">
+                <div>Avg Margin: ₹{avg_margin_per_trade:,.0f}</div>
+                <div style="margin-top:2px;"><span class="profit">₹{max_win:+,.0f}</span> / <span class="loss">₹{max_loss:+,.0f}</span></div>
             </div>
         </div>
     </div>
@@ -320,6 +350,14 @@ def generate_report():
 </body>
 </html>
 """
+
+    # Delete old HTML report file if it already exists
+    if os.path.exists(HTML_PATH):
+        try:
+            os.remove(HTML_PATH)
+            print(f"Old report deleted: {HTML_PATH}")
+        except Exception as exc:
+            print(f"Warning: Could not remove old HTML report: {exc}")
 
     with open(HTML_PATH, "w", encoding="utf-8") as f:
         f.write(html_content)
