@@ -9,9 +9,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-WorkingDirectory=/root/nifty-strike-engine
-ExecStart=/root/venv/bin/python scripts/auto_login.py --restart-service
+User=pi
+WorkingDirectory=/home/pi/nifty-strike-engine
+ExecStart=/home/pi/nifty-strike-engine/venv/bin/python scripts/auto_login.py --restart-service
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=nifty-auto-login
