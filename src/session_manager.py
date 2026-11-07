@@ -60,6 +60,23 @@ NIFTY_TOKEN = 256265           # Kite instrument token for NIFTY 50 index
 MIN_CANDLES = 25
 
 
+def is_weekend(dt: datetime) -> bool:
+    """Returns True if dt (in IST) falls on Saturday (5) or Sunday (6)."""
+    return dt.weekday() >= 5
+
+
+def is_market_hours(dt: datetime) -> bool:
+    """
+    Returns True if dt (in IST) is within active NSE trading hours.
+    NSE regular market hours: 09:15 to 15:30 IST on Monday-Friday.
+    We allow tick stream connection starting at 09:14 IST.
+    """
+    if is_weekend(dt):
+        return False
+    t = dt.time()
+    return time(9, 14) <= t <= time(15, 30)
+
+
 class SessionManager:
     """
     Manages a full intraday trading session.
@@ -114,29 +131,106 @@ class SessionManager:
         self._running: bool = False
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry point & Market Hours Orchestration
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        """Start the WebSocket and block until the session ends."""
+        """Start the session. Enforces market hours and weekend bypass."""
         mode = "LIVE" if self._s.live_order_placement else "SIMULATION"
         logger.info("Starting Nifty Strike Engine in %s mode.", mode)
+        self._running = True
+
+        if not self._s.enforce_market_hours:
+            logger.info("Market hours enforcement disabled. Connecting WebSocket directly.")
+            self._start_active_session()
+            return
+
+        now_ist = datetime.now(tz=IST)
+
+        # 1. Weekend Check (Saturday & Sunday)
+        if is_weekend(now_ist):
+            day_name = now_ist.strftime("%A")
+            logger.info(
+                "⏸️ Today is %s (Weekend). NSE market is closed. WebSocket connection bypassed.",
+                day_name,
+            )
+            self._notifier.info(
+                f"⏸️ **Nifty Strike Engine in Weekend Standby**\n"
+                f"• Today is **{day_name}** — Indian markets (NSE) are closed.\n"
+                f"• WebSocket connection bypassed.\n"
+                f"• Engine is sleeping in standby mode, awaiting Monday 09:14 IST open."
+            )
+            self._standby_loop()
+            return
+
+        # 2. Weekday Outside Market Hours Check
+        if not is_market_hours(now_ist):
+            t = now_ist.time()
+            if t < time(9, 14):
+                logger.info(
+                    "⏸️ Pre-market standby (%s IST). Waiting for market open at 09:14 IST.",
+                    now_ist.strftime("%H:%M"),
+                )
+            else:
+                logger.info(
+                    "⏸️ Post-market standby (%s IST). Market closed for today.",
+                    now_ist.strftime("%H:%M"),
+                )
+            self._standby_loop()
+            return
+
+        # 3. Active market session!
+        self._start_active_session()
+
+    def _start_active_session(self) -> None:
+        """Starts WebSocket and watchdog for an active trading session."""
+        mode = "LIVE" if self._s.live_order_placement else "SIMULATION"
         self._notifier.info(
-            f"🚀 Nifty Strike Engine started in **{mode}** mode.\n"
+            f"🚀 Nifty Strike Engine active in **{mode}** mode.\n"
             f"Timeframe: {self._s.candle_interval_minutes}m | "
             f"Lot: {self._s.lot_size} units | "
             f"Entry cutoff: {self._s.entry_cutoff_time} | "
             f"EOD exit: {self._s.eod_exit_time}"
         )
-        self._running = True
+        threading.Thread(target=self._market_close_watchdog, daemon=True).start()
         self._start_ticker()
+
+    def _standby_loop(self) -> None:
+        """Standby loop when market is closed, checking every 60s until market opens."""
+        logger.info("Entering low-power standby loop. Checking market status every 60s...")
+        while self._running:
+            now_ist = datetime.now(tz=IST)
+            if is_market_hours(now_ist):
+                logger.info("Market session is now active (%s IST)! Launching WebSocket...", now_ist.strftime("%H:%M:%S"))
+                self._start_active_session()
+                break
+
+            # Sleep in small increments so SIGINT/SIGTERM cleanly interrupt
+            for _ in range(60):
+                if not self._running:
+                    break
+                _time.sleep(1)
+
+    def _market_close_watchdog(self) -> None:
+        """Monitors time during active session and shuts down WebSocket at 15:30 IST."""
+        while self._running:
+            now_ist = datetime.now(tz=IST)
+            if now_ist.time() >= time(15, 30):
+                logger.info("Market close reached (15:30 IST). Stopping active trading session...")
+                self._notifier.info("🛑 **Market Closed (15:30 IST)**: WebSocket disconnected. Engine entering standby.")
+                self.stop()
+                break
+            _time.sleep(10)
 
     def stop(self) -> None:
         """Gracefully stop the WebSocket and exit."""
         logger.info("Stopping session manager...")
         self._running = False
         if self._ticker:
-            self._ticker.stop()
+            try:
+                self._ticker.stop()
+            except Exception as exc:
+                logger.debug("Error stopping ticker: %s", exc)
         self._notifier.info("🛑 Nifty Strike Engine stopped.")
 
     # ------------------------------------------------------------------

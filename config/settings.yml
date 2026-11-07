@@ -34,4 +34,5 @@ timing:
   candle_interval_minutes: 5
   entry_cutoff_time: "14:45" # No new entries after 14:45 IST
   eod_exit_time: "15:00" # Hard force-close all positions at 15:00 IST
+  enforce_market_hours: true # Bypass WebSocket on weekends and outside 09:14-15:30 IST
 

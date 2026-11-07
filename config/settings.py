@@ -98,6 +98,8 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
         parsed["entry_cutoff_time"] = str(timing["entry_cutoff_time"]).strip()
     if "eod_exit_time" in timing:
         parsed["eod_exit_time"] = str(timing["eod_exit_time"]).strip()
+    if "enforce_market_hours" in timing:
+        parsed["enforce_market_hours"] = bool(timing["enforce_market_hours"])
 
     return parsed
 
@@ -148,6 +150,7 @@ class Settings(BaseSettings):
     candle_interval_minutes: int
     entry_cutoff_time: str
     eod_exit_time: str
+    enforce_market_hours: bool = True
 
     @classmethod
     def load(cls, yaml_path: str = SETTINGS_YML_PATH) -> "Settings":
