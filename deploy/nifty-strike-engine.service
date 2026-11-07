@@ -1,29 +1,7 @@
-"""
-deploy/nifty-strike-engine.service
-==================================
-Systemd service file for running Nifty Strike Engine as root
-on a Raspberry Pi 5 production server.
-
-Installation on Raspberry Pi 5
---------------------------------
-1. Copy this file:
-   sudo cp deploy/nifty-strike-engine.service /etc/systemd/system/
-
-2. Reload systemd:
-   sudo systemctl daemon-reload
-
-3. Enable auto-start on boot:
-   sudo systemctl enable nifty-strike-engine
-
-4. Start the service:
-   sudo systemctl start nifty-strike-engine
-
-5. Check live status:
-   sudo systemctl status nifty-strike-engine
-
-6. View real-time logs:
-   sudo journalctl -u nifty-strike-engine -f
-"""
+# deploy/nifty-strike-engine.service
+# ==================================
+# Systemd service file for running Nifty Strike Engine as root
+# on a Raspberry Pi 5 production server.
 
 [Unit]
 Description=Nifty Strike Engine — Algorithmic Options Trading Bot
@@ -48,4 +26,3 @@ SyslogIdentifier=nifty-strike-engine
 
 [Install]
 WantedBy=multi-user.target
-
