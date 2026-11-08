@@ -39,6 +39,7 @@ from kiteconnect import KiteConnect
 
 from src.discord_notifier import DiscordNotifier
 from src.firestore_service import FirestoreService
+from src.greeks import calculate_greeks
 from src.signal_engine import SignalEngine
 from src.strike_selector import StrikeSelector, select_strike
 
@@ -289,7 +290,26 @@ class OrderManager:
         lower_bb = indicators.get("lower_bb", 0.0)
         r1       = indicators.get("r1", 0.0)
         s1       = indicators.get("s1", 0.0)
-        strike   = int(symbol[-8:-2]) if len(symbol) >= 8 else 0
+        # Strike & Entry Greeks (IV & Delta)
+        strike_num = int(symbol[-8:-2]) if len(symbol) >= 8 and symbol[-8:-2].isdigit() else int(round(spot / 50.0) * 50)
+        final_premium = fill_price or estimated_ltp or (spot * 0.01)
+
+        greeks = None
+        try:
+            greeks = calculate_greeks(
+                symbol=symbol,
+                spot=spot,
+                strike=float(strike_num),
+                option_type=option_type,
+                premium=final_premium,
+                candle_time=candle_time,
+            )
+            logger.info(
+                "[ENTRY GREEKS] %s %s Strike=%d | Premium=₹%.2f | IV=%.2f%% | Delta=%+.3f | DTE=%.1fd",
+                symbol, option_type, strike_num, final_premium, greeks.iv, greeks.delta, greeks.time_to_expiry_days,
+            )
+        except Exception as exc:
+            logger.warning("Could not calculate Greeks for %s: %s", symbol, exc)
 
         # Unique Trade ID
         trade_id = f"TRADE_{candle_time.astimezone(IST).strftime('%Y%m%d_%H%M%S')}_{option_type}"
@@ -312,31 +332,45 @@ class OrderManager:
 
         # Persist entry to Firestore
         if self._firestore:
+            greeks_dict = {
+                "iv": greeks.iv,
+                "delta": greeks.delta,
+                "time_to_expiry_days": greeks.time_to_expiry_days,
+            } if greeks else None
+
             self._firestore.record_entry(
                 trade_id=trade_id,
                 strategy_name=self._strategy_name,
                 symbol=symbol,
                 option_type=option_type,
-                strike=strike,
+                strike=strike_num,
                 spot_price=spot,
                 lot_size=self._qty,
                 entry_time=candle_time,
                 entry_price=fill_price or spot,
                 indicators=indicators,
                 live_trade=self._live,
+                greeks=greeks_dict,
             )
+
+        iv_val = greeks.iv if greeks else None
+        delta_val = greeks.delta if greeks else None
 
         if option_type == "CE":
             self._notify.ce_entry(
-                symbol=symbol, strike=strike, spot=spot, qty=self._qty,
+                symbol=symbol, strike=strike_num, spot=spot, qty=self._qty,
                 candle_time=candle_time, rsi=rsi, upper_bb=upper_bb, r1=r1,
                 entry_price=fill_price,
+                iv=iv_val,
+                delta=delta_val,
             )
         else:
             self._notify.pe_entry(
-                symbol=symbol, strike=strike, spot=spot, qty=self._qty,
+                symbol=symbol, strike=strike_num, spot=spot, qty=self._qty,
                 candle_time=candle_time, rsi=rsi, lower_bb=lower_bb, s1=s1,
                 entry_price=fill_price,
+                iv=iv_val,
+                delta=delta_val,
             )
 
     def _fetch_fill_price(self, order_id: str) -> float | None:

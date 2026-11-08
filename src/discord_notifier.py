@@ -92,6 +92,8 @@ class DiscordNotifier:
         upper_bb: float,
         r1: float,
         entry_price: float | None = None,
+        iv: float | None = None,
+        delta: float | None = None,
     ) -> None:
         fields = [
             ("Contract", symbol, True),
@@ -104,6 +106,8 @@ class DiscordNotifier:
                 ("Entry Premium", f"₹{entry_price:,.2f}", True),
                 ("Margin Used", f"₹{margin:,.2f}", True),
             ])
+        if iv is not None and delta is not None:
+            fields.append(("Greeks (IV / Delta)", f"IV: **{iv:.1f}%** | Δ: **{delta:+.3f}**", True))
         fields.extend([
             ("RSI (14)", f"{rsi:.1f}", True),
             ("Upper BB", f"₹{upper_bb:,.2f}", True),
@@ -128,6 +132,8 @@ class DiscordNotifier:
         lower_bb: float,
         s1: float,
         entry_price: float | None = None,
+        iv: float | None = None,
+        delta: float | None = None,
     ) -> None:
         fields = [
             ("Contract", symbol, True),
@@ -140,6 +146,8 @@ class DiscordNotifier:
                 ("Entry Premium", f"₹{entry_price:,.2f}", True),
                 ("Margin Used", f"₹{margin:,.2f}", True),
             ])
+        if iv is not None and delta is not None:
+            fields.append(("Greeks (IV / Delta)", f"IV: **{iv:.1f}%** | Δ: **{delta:+.3f}**", True))
         fields.extend([
             ("RSI (14)", f"{rsi:.1f}", True),
             ("Lower BB", f"₹{lower_bb:,.2f}", True),

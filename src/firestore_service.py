@@ -93,6 +93,7 @@ class FirestoreService:
         entry_price: float | None,
         indicators: dict[str, Any],
         live_trade: bool,
+        greeks: dict[str, Any] | None = None,
     ) -> bool:
         """
         Record a newly opened trade in the 'nifty' collection.
@@ -124,6 +125,11 @@ class FirestoreService:
                     "upper_bb": indicators.get("upper_bb"),
                     "lower_bb": indicators.get("lower_bb"),
                 },
+                "greeks_at_entry": {
+                    "iv": greeks.get("iv") if greeks else None,
+                    "delta": greeks.get("delta") if greeks else None,
+                    "time_to_expiry_days": greeks.get("time_to_expiry_days") if greeks else None,
+                } if greeks else None,
                 "status": "OPEN",
                 "live_trade": live_trade,
                 "exit_time": None,
