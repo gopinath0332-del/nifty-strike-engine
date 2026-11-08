@@ -186,6 +186,29 @@ class DiscordNotifier:
             fields=fields,
         )
 
+    def margin_insufficient(
+        self,
+        symbol: str,
+        option_type: str,
+        required_margin: float,
+        available_balance: float,
+        qty: int,
+    ) -> None:
+        shortfall = max(0.0, required_margin - available_balance)
+        self._send(
+            color=_COLOR["error"],
+            title="❌ Order Aborted: Insufficient Margin",
+            fields=[
+                ("Contract", symbol, True),
+                ("Option Type", option_type, True),
+                ("Quantity", f"{qty} units", True),
+                ("Required Margin", f"₹{required_margin:,.2f}", True),
+                ("Available Cash", f"₹{available_balance:,.2f}", True),
+                ("Shortfall", f"₹{shortfall:,.2f}", True),
+                ("Action", "Deposit funds or adjust lot size in settings.yml", False),
+            ],
+        )
+
     def error(self, message: str) -> None:
         self._send(
             color=_COLOR["error"],

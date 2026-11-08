@@ -114,6 +114,21 @@ class OrderManager:
             self._open_symbol, self._entry_price, self._current_trade_id, self._qty,
         )
 
+    def check_margin_sufficient(self, required_margin: float, symbol: str) -> tuple[bool, float]:
+        """
+        Queries Kite equity margins to verify available live cash balance.
+        Returns (is_sufficient, available_balance).
+        """
+        try:
+            margins = self._kite.margins(segment="equity")
+            available = margins.get("available", {})
+            avail_balance = float(available.get("live_balance") or available.get("cash") or margins.get("net") or 0.0)
+            is_sufficient = avail_balance >= required_margin
+            return is_sufficient, avail_balance
+        except Exception as exc:
+            logger.warning("Could not verify Kite account margins: %s. Proceeding with caution.", exc)
+            return True, -1.0
+
     def handle_ce_entry(self, spot: float, candle_time: datetime, indicators: dict) -> None:
         """Buy a CE (call) option based on 1% target premium of current spot price."""
         symbol, ltp = self._strike_selector.select_by_premium(spot, "CE")
@@ -216,6 +231,27 @@ class OrderManager:
             "Placing %s buy | symbol=%s qty=%d live=%s",
             option_type, symbol, self._qty, self._live,
         )
+
+        # Margin pre-check
+        premium_estimate = estimated_ltp if (estimated_ltp and estimated_ltp > 0) else (spot * 0.01)
+        required_margin = round(premium_estimate * self._qty, 2)
+
+        if self._live:
+            is_sufficient, avail_balance = self.check_margin_sufficient(required_margin, symbol)
+            if not is_sufficient:
+                shortfall = required_margin - avail_balance
+                logger.error(
+                    "LIVE order aborted for %s: Insufficient margin (Required=₹%.2f, Available=₹%.2f, Shortfall=₹%.2f)",
+                    symbol, required_margin, avail_balance, shortfall,
+                )
+                self._notify.margin_insufficient(
+                    symbol=symbol,
+                    option_type=option_type,
+                    required_margin=required_margin,
+                    available_balance=avail_balance,
+                    qty=self._qty,
+                )
+                return
 
         fill_price: float | None = None
 
