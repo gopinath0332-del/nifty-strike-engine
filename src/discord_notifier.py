@@ -18,6 +18,9 @@ Embed colours
 from __future__ import annotations
 
 import logging
+import queue
+import threading
+import time
 from datetime import datetime
 from typing import Any
 
@@ -47,7 +50,8 @@ _COLOR = {
 
 class DiscordNotifier:
     """
-    Formats and delivers structured Discord webhook embeds.
+    Formats and delivers structured Discord webhook embeds asynchronously
+    via an internal queue and background daemon worker thread.
 
     Parameters
     ----------
@@ -58,8 +62,20 @@ class DiscordNotifier:
     """
 
     def __init__(self, webhook_url: str, live_order_placement: bool = False) -> None:
-        self._url   = webhook_url
+        self._url   = webhook_url.strip() if webhook_url else ""
         self._live  = live_order_placement
+        self._queue: queue.Queue[dict | None] = queue.Queue(maxsize=1000)
+        self._session = requests.Session()
+
+        # Background worker for asynchronous HTTP delivery
+        self._worker_thread: threading.Thread | None = None
+        if self._url:
+            self._worker_thread = threading.Thread(
+                target=self._worker,
+                name="DiscordWebhookWorker",
+                daemon=True,
+            )
+            self._worker_thread.start()
 
     # ------------------------------------------------------------------
     # Public notification methods
@@ -224,13 +240,27 @@ class DiscordNotifier:
         )
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Asynchronous Delivery & Lifecycle
     # ------------------------------------------------------------------
 
+    def flush(self, timeout: float = 5.0) -> None:
+        """Waits until all queued notifications are delivered (up to timeout seconds)."""
+        if self._url and self._worker_thread and self._worker_thread.is_alive():
+            try:
+                self._queue.join()
+            except Exception:
+                pass
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Flushes pending messages and stops the background worker thread."""
+        if self._url and self._worker_thread and self._worker_thread.is_alive():
+            self._queue.put(None)
+            self._worker_thread.join(timeout=timeout)
+
     def _send(self, color: int, title: str, fields: list[tuple[str, str, bool]]) -> None:
-        """Post a Discord embed payload; log warning on failure."""
+        """Enqueue a Discord embed payload for non-blocking background delivery."""
         if not self._url:
-            logger.warning("Discord webhook URL not configured; message dropped.")
+            logger.debug("Discord webhook URL not configured; message dropped.")
             return
 
         payload = {
@@ -251,14 +281,40 @@ class DiscordNotifier:
         }
 
         try:
-            resp = requests.post(self._url, json=payload, timeout=8)
-            if resp.status_code not in (200, 204):
-                logger.warning(
-                    "Discord webhook returned %d: %s",
-                    resp.status_code, resp.text,
-                )
-        except Exception as exc:
-            logger.warning("Failed to deliver Discord notification: %s", exc)
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            logger.warning("Discord notification queue is full (1000 items). Dropping message: %s", title)
+
+    def _worker(self) -> None:
+        """Background worker thread consuming and delivering Discord webhook payloads."""
+        while True:
+            payload = self._queue.get()
+            if payload is None:
+                # Poison pill sent by stop()
+                self._queue.task_done()
+                break
+
+            try:
+                resp = self._session.post(self._url, json=payload, timeout=8)
+                if resp.status_code == 429:
+                    # Discord rate-limit backoff handling
+                    try:
+                        retry_after = float(resp.json().get("retry_after", 1.0))
+                    except Exception:
+                        retry_after = 1.0
+                    logger.warning("Discord webhook rate-limited. Backing off for %.2fs...", retry_after)
+                    time.sleep(retry_after)
+                    # Retry once after backoff
+                    self._session.post(self._url, json=payload, timeout=8)
+                elif resp.status_code not in (200, 204):
+                    logger.warning(
+                        "Discord webhook returned HTTP %d: %s",
+                        resp.status_code, resp.text,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to deliver Discord notification: %s", exc)
+            finally:
+                self._queue.task_done()
 
 
 def _fmt_time(dt: datetime) -> str:

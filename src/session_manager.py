@@ -249,6 +249,7 @@ class SessionManager:
             except Exception as exc:
                 logger.debug("Error stopping ticker: %s", exc)
         self._notifier.info("🛑 Nifty Strike Engine stopped.")
+        self._notifier.stop()
 
     # ------------------------------------------------------------------
     # Kite WebSocket callbacks

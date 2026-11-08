@@ -1,0 +1,82 @@
+"""
+tests/test_discord_notifier.py
+==============================
+Unit tests for asynchronous DiscordNotifier worker and queue.
+"""
+
+from unittest.mock import MagicMock, patch
+import time
+from datetime import datetime, timezone, timedelta
+import pytest
+
+from src.discord_notifier import DiscordNotifier
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def test_notifier_empty_url_is_noop():
+    notifier = DiscordNotifier(webhook_url="")
+    # Should not start worker thread
+    assert notifier._worker_thread is None
+    # Method calls should be immediate no-ops
+    notifier.info("Test message")
+    notifier.flush()
+    notifier.stop()
+
+
+def test_notifier_delivers_asynchronously():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 204
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(
+            webhook_url="https://discord.com/api/webhooks/mock/test",
+            live_order_placement=False,
+        )
+
+        t_start = time.perf_counter()
+        notifier.info("Hello async world!")
+        elapsed = time.perf_counter() - t_start
+
+        # Enqueuing must return immediately (< 50ms)
+        assert elapsed < 0.05
+
+        # Flush to wait for background thread to post
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        call_kwargs = mock_post.call_args[1]
+        assert "embeds" in call_kwargs["json"]
+        assert call_kwargs["json"]["embeds"][0]["title"] == "ℹ️ System Notification"
+
+
+def test_notifier_handles_http_error_gracefully():
+    # If requests.post raises an exception, the caller is unaffected
+    with patch("requests.Session.post", side_effect=RuntimeError("Connection reset by peer")):
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.error("Something went wrong")
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+        # Background worker caught exception, caller thread does not crash
+
+
+def test_notifier_rate_limit_backoff():
+    rate_limit_resp = MagicMock()
+    rate_limit_resp.status_code = 429
+    rate_limit_resp.json.return_value = {"retry_after": 0.05}
+
+    success_resp = MagicMock()
+    success_resp.status_code = 200
+
+    with patch("requests.Session.post", side_effect=[rate_limit_resp, success_resp]) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.info("Rate limit test")
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        # Worker retried after backoff
+        assert mock_post.call_count == 2
+
