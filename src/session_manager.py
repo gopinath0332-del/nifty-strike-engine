@@ -144,6 +144,10 @@ class SessionManager:
         # Latest known NIFTY spot price (from ticks)
         self._spot: float = 0.0
 
+        # Daily metrics for EOD summary
+        self._candles_evaluated_today: int = 0
+        self._session_date: date = datetime.now(tz=IST).date()
+
         self._ticker: KiteTicker | None = None
         self._running: bool = False
 
@@ -305,11 +309,68 @@ class SessionManager:
         while self._running:
             now_ist = datetime.now(tz=IST)
             if now_ist.time() >= time(15, 30):
-                logger.info("Market close reached (15:30 IST). Stopping active trading session...")
-                self._notifier.info("🛑 **Market Closed (15:30 IST)**: WebSocket disconnected. Engine entering standby.")
+                logger.info("Market close reached (15:30 IST). Dispatching EOD summary and stopping session...")
+                self._send_eod_summary(now_ist)
                 self.stop()
                 break
             _time.sleep(10)
+
+    def _send_eod_summary(self, now_ist: datetime) -> None:
+        """Dispatches the 15:30 IST EOD Session Summary embed to Discord."""
+        date_str = now_ist.strftime("%Y-%m-%d")
+        today = now_ist.date()
+
+        # 1. Day Range of NIFTY
+        day_high: float | None = None
+        day_low: float | None = None
+
+        # Inspect local candle buffer for today's bars
+        today_candles = [c for c in self._candle_buffer if c.get("date") == today]
+        if today_candles:
+            day_high = max(c["high"] for c in today_candles)
+            day_low = min(c["low"] for c in today_candles)
+
+        # Fallback to Kite OHLC API if local buffer is empty or partial
+        if (day_high is None or day_low is None) and self._kite:
+            try:
+                ohlc_resp = self._kite.ohlc(["NSE:NIFTY 50"])
+                data = ohlc_resp.get("NSE:NIFTY 50", {}).get("ohlc", {})
+                day_high = day_high or data.get("high")
+                day_low = day_low or data.get("low")
+            except Exception as exc:
+                logger.debug("Could not fetch NIFTY OHLC for EOD summary: %s", exc)
+
+        range_str = (
+            f"₹{day_low:,.2f} – ₹{day_high:,.2f}"
+            if (day_high and day_low and day_high > 0 and day_low > 0)
+            else "N/A"
+        )
+
+        # 2. Trades taken summary
+        trades_count = self._engine.trade_today
+        if trades_count == 0:
+            trades_str = "0 (No breakout met all 4 filter criteria)"
+        else:
+            trades_str = f"{trades_count} (Completed & Managed)"
+
+        # 3. Next session label (Friday -> Monday, Mon-Thu -> tomorrow)
+        next_session = "Monday 08:50 AM IST" if now_ist.weekday() == 4 else "tomorrow 08:50 AM IST"
+
+        # 4. Dispatch embed
+        try:
+            self._notifier.eod_summary(
+                date_str=date_str,
+                signals_evaluated=self._candles_evaluated_today,
+                trades_taken_str=trades_str,
+                day_range_str=range_str,
+                next_session_str=next_session,
+            )
+            logger.info(
+                "EOD Summary dispatched: Date=%s, Candles=%d, Trades=%d, Range=%s",
+                date_str, self._candles_evaluated_today, trades_count, range_str,
+            )
+        except Exception as exc:
+            logger.warning("Failed to dispatch EOD summary: %s", exc)
 
     def stop(self) -> None:
         """Gracefully stop the WebSocket and exit."""
@@ -398,6 +459,13 @@ class SessionManager:
         """
         try:
             ist_ts = candle.timestamp.astimezone(IST)
+
+            # Track daily evaluation count
+            c_date = ist_ts.date()
+            if c_date != self._session_date:
+                self._candles_evaluated_today = 0
+                self._session_date = c_date
+            self._candles_evaluated_today += 1
 
             # Append candle to rolling buffer
             self._candle_buffer.append({

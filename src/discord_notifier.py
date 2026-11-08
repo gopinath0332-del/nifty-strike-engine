@@ -270,6 +270,30 @@ class DiscordNotifier:
             fields=fields,
         )
 
+    def eod_summary(
+        self,
+        date_str: str,
+        signals_evaluated: int,
+        trades_taken_str: str,
+        day_range_str: str,
+        next_session_str: str = "tomorrow 08:50 AM IST",
+    ) -> None:
+        """Sends the 15:30 PM EOD market close summary embed."""
+        fields = [
+            ("Date", date_str, True),
+            ("Market Status", "Closed (15:30 IST)", True),
+            ("Signals Evaluated", f"{signals_evaluated} candles", True),
+            ("Trades Taken", trades_taken_str, False),
+            ("NIFTY Day Range", day_range_str, True),
+            ("Bot Status", f"Entering standby until {next_session_str}", False),
+        ]
+
+        self._send(
+            color=_COLOR["eod_exit"],
+            title="📊 Nifty Strike Engine — EOD Session Summary",
+            fields=fields,
+        )
+
     def error(self, message: str) -> None:
         self._send(
             color=_COLOR["error"],

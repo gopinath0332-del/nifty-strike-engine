@@ -114,3 +114,33 @@ def test_morning_briefing_embed_format():
         assert "24,520.00" in field_dict["Daily Pivots"]
         assert "5m Candle Builder Armed" in field_dict["Execution Parameters"]
 
+
+def test_eod_summary_embed_format():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.eod_summary(
+            date_str="2026-11-09",
+            signals_evaluated=75,
+            trades_taken_str="0 (No breakout met all 4 filter criteria)",
+            day_range_str="₹24,520.00 – ₹24,780.00",
+            next_session_str="tomorrow 08:50 AM IST",
+        )
+
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["title"] == "📊 Nifty Strike Engine — EOD Session Summary"
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert field_dict["Date"] == "2026-11-09"
+        assert field_dict["Market Status"] == "Closed (15:30 IST)"
+        assert field_dict["Signals Evaluated"] == "75 candles"
+        assert "No breakout met all 4 filter criteria" in field_dict["Trades Taken"]
+        assert "₹24,520.00 – ₹24,780.00" in field_dict["NIFTY Day Range"]
+        assert "tomorrow 08:50 AM IST" in field_dict["Bot Status"]
+
