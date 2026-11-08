@@ -29,7 +29,7 @@ import logging
 import threading
 import time as _time
 from collections import deque
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import pandas as pd
 
@@ -201,16 +201,88 @@ class SessionManager:
 
     def _start_active_session(self) -> None:
         """Starts WebSocket and watchdog for an active trading session."""
-        mode = "LIVE" if self._s.live_order_placement else "SIMULATION"
-        self._notifier.info(
-            f"🚀 Nifty Strike Engine active in **{mode}** mode.\n"
-            f"Timeframe: {self._s.candle_interval_minutes}m | "
-            f"Lot: {self._s.lot_size} units | "
-            f"Entry cutoff: {self._s.entry_cutoff_time} | "
-            f"EOD exit: {self._s.eod_exit_time}"
-        )
+        self._send_morning_briefing()
         threading.Thread(target=self._market_close_watchdog, daemon=True).start()
         self._start_ticker()
+
+    def _send_morning_briefing(self) -> None:
+        """Gathers account, token, and daily pivot data to dispatch the 09:14 AM morning briefing."""
+        mode = "LIVE" if self._s.live_order_placement else "SIMULATION"
+        user_id = "Zerodha User"
+        available_cash: float | None = None
+        prev_close: float | None = None
+        pivot: float | None = None
+        r1: float | None = None
+        s1: float | None = None
+
+        # 1. Fetch user profile / ID
+        try:
+            profile = self._kite.profile()
+            user_id = profile.get("user_id", user_id)
+        except Exception as exc:
+            logger.debug("Could not fetch user profile: %s", exc)
+
+        # 2. Fetch cash margin
+        try:
+            margins = self._kite.margins(segment="equity")
+            avail = margins.get("available", {})
+            available_cash = float(avail.get("live_balance") or avail.get("cash") or margins.get("net") or 0.0)
+        except Exception as exc:
+            logger.debug("Could not fetch margins: %s", exc)
+
+        # 3. Fetch previous day High, Low, Close and compute Pivots
+        try:
+            today = datetime.now(tz=IST).date()
+            from_dt = today - timedelta(days=6)
+            records = self._kite.historical_data(
+                instrument_token=NIFTY_TOKEN,
+                from_date=from_dt,
+                to_date=today,
+                interval="day",
+            )
+            if records:
+                prev_bar = records[-1]
+                rec_date = prev_bar.get("date")
+                if hasattr(rec_date, "date") and rec_date.date() == today and len(records) >= 2:
+                    prev_bar = records[-2]
+
+                ph = float(prev_bar["high"])
+                pl = float(prev_bar["low"])
+                pc = float(prev_bar["close"])
+
+                prev_close = pc
+                p = (ph + pl + pc) / 3.0
+                pivot = round(p, 2)
+                r1 = round(2.0 * p - pl, 2)
+                s1 = round(2.0 * p - ph, 2)
+        except Exception as exc:
+            logger.debug("Could not compute daily pivots from historical data: %s", exc)
+
+        # 4. Dispatch Discord briefing
+        try:
+            self._notifier.morning_briefing(
+                user_id=user_id,
+                mode=mode,
+                lot_size=self._s.lot_size,
+                timeframe=self._s.candle_interval_minutes,
+                entry_cutoff=self._s.entry_cutoff_time,
+                eod_exit=self._s.eod_exit_time,
+                available_cash=available_cash,
+                prev_close=prev_close,
+                pivot=pivot,
+                r1=r1,
+                s1=s1,
+            )
+            logger.info(
+                "Morning briefing dispatched to Discord: User=%s, Cash=%s, Pivots(P=%.2f, R1=%.2f, S1=%.2f)",
+                user_id,
+                f"₹{available_cash:,.2f}" if available_cash is not None else "N/A",
+                pivot or 0.0,
+                r1 or 0.0,
+                s1 or 0.0,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send morning briefing: %s", exc)
 
     def _standby_loop(self) -> None:
         """Standby loop when market is closed, checking every 60s until market opens."""

@@ -80,3 +80,37 @@ def test_notifier_rate_limit_backoff():
         # Worker retried after backoff
         assert mock_post.call_count == 2
 
+
+def test_morning_briefing_embed_format():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.morning_briefing(
+            user_id="tql221",
+            mode="SIMULATION",
+            lot_size=65,
+            timeframe=5,
+            entry_cutoff="14:45",
+            eod_exit="15:00",
+            available_cash=125000.50,
+            prev_close=24500.0,
+            pivot=24520.0,
+            r1=24600.0,
+            s1=24450.0,
+        )
+
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["title"] == "🛡️ Nifty Strike Engine — System Armed & Ready"
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "tql221" in field_dict["Broker Auth"]
+        assert "125,000.50" in field_dict["Cash Available"]
+        assert "24,520.00" in field_dict["Daily Pivots"]
+        assert "5m Candle Builder Armed" in field_dict["Execution Parameters"]
+

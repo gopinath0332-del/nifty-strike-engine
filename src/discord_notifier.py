@@ -225,6 +225,51 @@ class DiscordNotifier:
             ],
         )
 
+    def morning_briefing(
+        self,
+        user_id: str,
+        mode: str,
+        lot_size: int,
+        timeframe: int,
+        entry_cutoff: str,
+        eod_exit: str,
+        available_cash: float | None = None,
+        prev_close: float | None = None,
+        pivot: float | None = None,
+        r1: float | None = None,
+        s1: float | None = None,
+    ) -> None:
+        """Sends the 09:14 AM morning briefing embed right before market open."""
+        cash_str = f"₹{available_cash:,.2f}" if available_cash is not None else "N/A (Simulation)"
+        pivots_str = (
+            f"**P:** ₹{pivot:,.2f}  |  **R1:** ₹{r1:,.2f}  |  **S1:** ₹{s1:,.2f}"
+            if (pivot is not None and r1 is not None and s1 is not None)
+            else "Awaiting market data"
+        )
+        prev_close_str = f"₹{prev_close:,.2f}" if prev_close else "N/A"
+
+        fields = [
+            ("Broker Auth", f"User: `{user_id}` (Token Valid ✅)", True),
+            ("Trading Mode", f"**{mode}** ({lot_size} units / 1 lot)", True),
+            ("Cash Available", cash_str, True),
+            ("NIFTY Prev Close", prev_close_str, True),
+            ("Daily Pivots", pivots_str, False),
+            (
+                "Execution Parameters",
+                f"• Timeframe: **{timeframe}m Candle Builder Armed** ✅\n"
+                f"• Cutoff Time: {entry_cutoff} IST (No new entries after)\n"
+                f"• Hard EOD Exit: {eod_exit} IST sharp\n"
+                f"• Risk Rules: Max 1 Trade/Day • Trailing Supertrend Stop",
+                False,
+            ),
+        ]
+
+        self._send(
+            color=_COLOR["eod_exit"],
+            title="🛡️ Nifty Strike Engine — System Armed & Ready",
+            fields=fields,
+        )
+
     def error(self, message: str) -> None:
         self._send(
             color=_COLOR["error"],
