@@ -88,25 +88,36 @@ class SessionManager:
         Loaded application settings.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        kite_client: KiteConnect | None = None,
+        notifier: DiscordNotifier | None = None,
+        firestore: FirestoreService | None = None,
+        state_manager: StateManager | None = None,
+    ) -> None:
         self._s = settings
 
-        # Build Kite REST client
-        self._kite = build_authenticated_kite(
-            settings.kite_api_key, settings.kite_access_token
+        # Build Kite REST client (or use injected client)
+        self._kite = (
+            kite_client
+            if kite_client is not None
+            else build_authenticated_kite(
+                settings.kite_api_key, settings.kite_access_token
+            )
         )
 
         # Core components
-        self._notifier = DiscordNotifier(
+        self._notifier = notifier or DiscordNotifier(
             webhook_url=settings.discord_webhook_url,
             live_order_placement=settings.live_order_placement,
         )
-        self._firestore = FirestoreService(
+        self._firestore = firestore or FirestoreService(
             credentials_path=settings.firestore_credentials_path,
             collection_name=settings.firestore_collection,
         )
         # State Manager (Crash Recovery & Position Persistence)
-        self._state_manager = StateManager()
+        self._state_manager = state_manager or StateManager()
 
         self._engine = SignalEngine(
             entry_cutoff=time(*settings.entry_cutoff_hhmm),
@@ -140,6 +151,9 @@ class SessionManager:
 
         # Rolling OHLCV buffer (deque of dicts → converted to DataFrame on demand)
         self._candle_buffer: deque[dict] = deque(maxlen=200)
+
+        # Pre-seed historical candles on startup so indicators & pivots are ready
+        self.preseed_historical_candles(count=50)
 
         # Latest known NIFTY spot price (from ticks)
         self._spot: float = 0.0
@@ -205,9 +219,87 @@ class SessionManager:
 
     def _start_active_session(self) -> None:
         """Starts WebSocket and watchdog for an active trading session."""
+        if len(self._candle_buffer) < MIN_CANDLES:
+            self.preseed_historical_candles(count=50)
         self._send_morning_briefing()
         threading.Thread(target=self._market_close_watchdog, daemon=True).start()
         self._start_ticker()
+
+    def preseed_historical_candles(self, count: int = 50) -> int:
+        """
+        Pre-seeds historical NIFTY 50 candles into `_candle_buffer`.
+
+        Fetches the last `count` closed 5-minute candles from the Kite historical API.
+        This warms up Supertrend, RSI, Bollinger Bands, and Traditional Pivots so
+        the engine is ready to evaluate signals on the very first candle of the day
+        without waiting 2 hours (25 candles) for buffer warm-up.
+
+        Returns the number of candles loaded into the buffer.
+        """
+        if not self._kite:
+            logger.debug("Kite client not initialized; skipping candle pre-seeding.")
+            return 0
+
+        try:
+            now_ist = datetime.now(tz=IST)
+            from_dt = now_ist.date() - timedelta(days=6)
+            interval_str = (
+                "minute"
+                if self._s.candle_interval_minutes == 1
+                else f"{self._s.candle_interval_minutes}minute"
+            )
+
+            records = self._kite.historical_data(
+                instrument_token=NIFTY_TOKEN,
+                from_date=from_dt,
+                to_date=now_ist,
+                interval=interval_str,
+            )
+
+            if not records:
+                logger.warning("No historical candles returned for NIFTY 50 token %d.", NIFTY_TOKEN)
+                return 0
+
+            # Take the latest `count` closed bars
+            recent_records = records[-count:] if len(records) > count else records
+
+            self._candle_buffer.clear()
+            for rec in recent_records:
+                rec_dt = rec.get("date")
+                if hasattr(rec_dt, "tzinfo") and rec_dt.tzinfo is not None:
+                    ist_ts = rec_dt.astimezone(IST)
+                elif hasattr(rec_dt, "replace"):
+                    ist_ts = rec_dt.replace(tzinfo=IST)
+                elif isinstance(rec_dt, str):
+                    try:
+                        parsed_dt = datetime.fromisoformat(rec_dt)
+                        ist_ts = parsed_dt if parsed_dt.tzinfo else parsed_dt.replace(tzinfo=IST)
+                    except Exception:
+                        ist_ts = now_ist
+                else:
+                    ist_ts = now_ist
+
+                self._candle_buffer.append({
+                    "open": float(rec.get("open", 0.0)),
+                    "high": float(rec.get("high", 0.0)),
+                    "low": float(rec.get("low", 0.0)),
+                    "close": float(rec.get("close", 0.0)),
+                    "volume": float(rec.get("volume", 0.0)),
+                    "timestamp": ist_ts,
+                    "date": ist_ts.date(),
+                })
+
+            logger.info(
+                "Pre-seeded %d historical %s candles into buffer (Buffer size: %d).",
+                len(self._candle_buffer),
+                interval_str,
+                len(self._candle_buffer),
+            )
+            return len(self._candle_buffer)
+
+        except Exception as exc:
+            logger.warning("Could not pre-seed historical candles: %s", exc)
+            return len(self._candle_buffer)
 
     def _send_morning_briefing(self) -> None:
         """Gathers account, token, and daily pivot data to dispatch the 09:14 AM morning briefing."""
