@@ -94,9 +94,11 @@ class SignalEngine:
         self,
         entry_cutoff: time = time(14, 45),
         eod_exit: time = time(15, 0),
+        state_manager: Any = None,
     ) -> None:
         self.entry_cutoff = entry_cutoff
         self.eod_exit     = eod_exit
+        self._state_manager = state_manager
 
         # Mutable state
         self._position: str | None = None   # None | 'CE' | 'PE'
@@ -115,6 +117,22 @@ class SignalEngine:
     def trade_today(self) -> int:
         return self._trade_today
 
+    def restore_state(
+        self,
+        position: str | None,
+        trade_today: int,
+        last_reset_date: date | None = None,
+    ) -> None:
+        """Restores state from disk/reconciliation on startup."""
+        self._position = position.upper() if position else None
+        self._trade_today = trade_today
+        if last_reset_date:
+            self._last_reset_date = last_reset_date
+        logger.info(
+            "SignalEngine state restored: position=%s trade_today=%d date=%s",
+            self._position, self._trade_today, self._last_reset_date,
+        )
+
     # ------------------------------------------------------------------
     # Daily reset
     # ------------------------------------------------------------------
@@ -128,6 +146,11 @@ class SignalEngine:
                 )
             self._trade_today      = 0
             self._last_reset_date  = candle_date
+            if self._state_manager:
+                try:
+                    self._state_manager.record_daily_reset(candle_date)
+                except Exception as exc:
+                    logger.warning("Failed to record daily reset in state manager: %s", exc)
 
     # ------------------------------------------------------------------
     # State setters (called by OrderManager after fills confirmed)

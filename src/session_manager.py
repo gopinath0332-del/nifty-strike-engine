@@ -50,6 +50,7 @@ from src.indicators import apply_all
 from src.kite_auth import build_authenticated_kite
 from src.order_manager import OrderManager
 from src.signal_engine import SignalEngine
+from src.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 signals_logger = logging.getLogger("signals")
@@ -104,9 +105,13 @@ class SessionManager:
             credentials_path=settings.firestore_credentials_path,
             collection_name=settings.firestore_collection,
         )
+        # State Manager (Crash Recovery & Position Persistence)
+        self._state_manager = StateManager()
+
         self._engine = SignalEngine(
             entry_cutoff=time(*settings.entry_cutoff_hhmm),
             eod_exit=time(*settings.eod_exit_hhmm),
+            state_manager=self._state_manager,
         )
         self._order_mgr = OrderManager(
             kite=self._kite,
@@ -116,7 +121,19 @@ class SessionManager:
             live_order_placement=settings.live_order_placement,
             strategy_name=settings.strategy_name,
             firestore_service=self._firestore,
+            state_manager=self._state_manager,
         )
+
+        # Run startup reconciliation and recovery
+        logger.info("Running startup state reconciliation...")
+        rec_result = self._state_manager.reconcile(
+            kite=self._kite,
+            order_manager=self._order_mgr,
+            signal_engine=self._engine,
+            live_mode=settings.live_order_placement,
+            notifier=self._notifier,
+        )
+        logger.info("Reconciliation complete: %s", rec_result.get("status"))
         self._candle_builder = CandleBuilder(
             interval_minutes=settings.candle_interval_minutes
         )

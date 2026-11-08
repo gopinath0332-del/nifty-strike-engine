@@ -67,6 +67,7 @@ class OrderManager:
         live_order_placement: bool = False,
         strategy_name: str = "NIFTY Options Buying Strategy v9",
         firestore_service: FirestoreService | None = None,
+        state_manager: Any = None,
     ) -> None:
         self._kite   = kite
         self._engine = signal_engine
@@ -75,6 +76,7 @@ class OrderManager:
         self._live   = live_order_placement
         self._strategy_name = strategy_name
         self._firestore = firestore_service
+        self._state_manager = state_manager
         self._strike_selector = StrikeSelector(kite=kite)
 
         # In-memory position tracking
@@ -93,6 +95,24 @@ class OrderManager:
     @property
     def entry_price(self) -> float | None:
         return self._entry_price
+
+    def restore_state(
+        self,
+        symbol: str | None,
+        entry_price: float | None,
+        trade_id: str | None = None,
+        qty: int | None = None,
+    ) -> None:
+        """Restores open position state from disk/reconciliation on startup."""
+        self._open_symbol = symbol
+        self._entry_price = entry_price
+        self._current_trade_id = trade_id
+        if qty is not None:
+            self._qty = qty
+        logger.info(
+            "OrderManager state restored: symbol=%s entry_price=%s trade_id=%s qty=%s",
+            self._open_symbol, self._entry_price, self._current_trade_id, self._qty,
+        )
 
     def handle_ce_entry(self, spot: float, candle_time: datetime, indicators: dict) -> None:
         """Buy a CE (call) option based on 1% target premium of current spot price."""
@@ -166,6 +186,13 @@ class OrderManager:
                 pnl=pnl,
             )
 
+        # Update persistent state
+        if self._state_manager:
+            try:
+                self._state_manager.record_exit()
+            except Exception as exc:
+                logger.warning("Failed to record exit in state manager: %s", exc)
+
         # Update state
         self._engine.on_exit_filled()
         self._open_symbol = None
@@ -231,6 +258,21 @@ class OrderManager:
         # Unique Trade ID
         trade_id = f"TRADE_{candle_time.astimezone(IST).strftime('%Y%m%d_%H%M%S')}_{option_type}"
         self._current_trade_id = trade_id
+
+        # Persist open position to disk for crash recovery
+        if self._state_manager:
+            try:
+                self._state_manager.record_entry(
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    option_type=option_type,
+                    entry_price=fill_price or spot,
+                    entry_time=candle_time,
+                    qty=self._qty,
+                    spot_price=spot,
+                )
+            except Exception as exc:
+                logger.warning("Failed to record entry in state manager: %s", exc)
 
         # Persist entry to Firestore
         if self._firestore:
