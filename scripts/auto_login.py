@@ -245,7 +245,8 @@ def main() -> None:
         msg = f"Auto-login failed: missing or default values for {', '.join(missing)} in .env"
         logger.error(msg)
         if notifier:
-            notifier.error(msg)
+            notifier.auth_failure(user_id=user_id or "Unknown", error=msg)
+            notifier.stop(timeout=5.0)
         sys.exit(1)
 
     try:
@@ -263,29 +264,32 @@ def main() -> None:
         save_access_token_to_env(env_path, access_token)
         logger.info("KITE_ACCESS_TOKEN updated successfully in %s", env_path)
 
+        # Send authentication success notification immediately before service restart
+        if notifier:
+            notifier.auth_success(
+                user_id=user_id,
+                message="Daily access token refreshed and saved to .env",
+                service_status="Restarting nifty-strike-engine to apply fresh credentials...",
+            )
+            notifier.flush(timeout=5.0)
+
         # Restart service if flag given or running on Linux
         restarted = False
         if args.restart_service or sys.platform.startswith("linux"):
             restarted = restart_systemd_service("nifty-strike-engine")
 
-        now_str = datetime.now(tz=IST).strftime("%H:%M:%S IST")
-        success_msg = (
-            f"🏸 **Zero-Touch Morning Login Successful** ({now_str})\n"
-            f"• User: `{user_id}`\n"
-            f"• Access Token: Updated in `.env`\n"
-            f"• Service Restart: {'✅ Completed' if restarted else 'ℹ️ Standalone'}\n"
-            f"• Engine Status: Armed & Ready for Market Open (09:15 IST)"
-        )
-        logger.info(success_msg)
-        if notifier:
-            notifier.info(success_msg)
+        logger.info("Auto-login finished successfully (service restarted: %s).", restarted)
 
     except Exception as exc:
         err_msg = f"Zero-Touch Auto-Login Failed: {exc}"
         logger.exception(err_msg)
         if notifier:
-            notifier.error(err_msg)
+            notifier.auth_failure(user_id=user_id, error=str(exc))
+            notifier.stop(timeout=5.0)
         sys.exit(1)
+    finally:
+        if notifier:
+            notifier.stop(timeout=5.0)
 
 
 if __name__ == "__main__":

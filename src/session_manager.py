@@ -206,6 +206,12 @@ class SessionManager:
                     "⏸️ Pre-market standby (%s IST). Waiting for market open at 09:14 IST.",
                     now_ist.strftime("%H:%M"),
                 )
+                self._notifier.info(
+                    f"⏳ **Nifty Strike Engine — Pre-Market Standby**\n"
+                    f"• Time: **{now_ist.strftime('%H:%M:%S')} IST**\n"
+                    f"• Historical Pre-seed: **{len(self._candle_buffer)} candles loaded** ✅\n"
+                    f"• Status: Service online & waiting for 09:14 IST morning briefing."
+                )
             else:
                 logger.info(
                     "⏸️ Post-market standby (%s IST). Market closed for today.",
@@ -473,7 +479,11 @@ class SessionManager:
                 self._ticker.stop()
             except Exception as exc:
                 logger.debug("Error stopping ticker: %s", exc)
-        self._notifier.info("🛑 Nifty Strike Engine stopped.")
+        now_ist = datetime.now(tz=IST)
+        if is_market_hours(now_ist):
+            self._notifier.info("🛑 Nifty Strike Engine stopped during active market session.")
+        else:
+            self._notifier.info("⏸️ Nifty Strike Engine stopped (Pre-market restart / standby).")
         self._notifier.stop()
 
     # ------------------------------------------------------------------

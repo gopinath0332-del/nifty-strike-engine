@@ -144,3 +144,54 @@ def test_eod_summary_embed_format():
         assert "₹24,520.00 – ₹24,780.00" in field_dict["NIFTY Day Range"]
         assert "tomorrow 08:50 AM IST" in field_dict["Bot Status"]
 
+
+def test_auth_success_embed_format():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.auth_success(
+            user_id="TQL221",
+            message="Daily access token generated and saved to .env",
+            service_status="Restarting nifty-strike-engine service",
+        )
+
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["title"] == "🔑 Zerodha Morning Authentication Successful"
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "TQL221" in field_dict["Broker User ID"]
+        assert "Success ✅" in field_dict["Auth Status"]
+        assert "Daily access token generated and saved to .env" in field_dict["Token Storage"]
+        assert "Restarting nifty-strike-engine service" in field_dict["Engine Action"]
+
+
+def test_auth_failure_embed_format():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.auth_failure(
+            user_id="TQL221",
+            error="Step 1 (Credentials) rejected by Kite: Invalid password",
+        )
+
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["title"] == "❌ Zerodha Morning Authentication Failed"
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "TQL221" in field_dict["Broker User ID"]
+        assert "Failed ❌" in field_dict["Auth Status"]
+        assert "Invalid password" in field_dict["Error Details"]
+
+

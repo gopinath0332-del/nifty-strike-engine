@@ -302,6 +302,48 @@ class DiscordNotifier:
             fields=fields,
         )
 
+    def auth_success(
+        self,
+        user_id: str,
+        message: str = "Daily access token generated and saved to .env",
+        service_status: str = "Restarting nifty-strike-engine service to apply token",
+    ) -> None:
+        """Sends an authentication success embed to Discord."""
+        now_str = datetime.now(tz=IST).strftime("%H:%M:%S IST")
+        fields = [
+            ("Broker User ID", f"`{user_id}` (Token Active ✅)", True),
+            ("Auth Status", "Success ✅", True),
+            ("Time", now_str, True),
+            ("Token Storage", message, False),
+            ("Engine Action", service_status, False),
+            ("Schedule", "Standby until 09:14 IST briefing • Market open 09:15 IST", False),
+        ]
+        self._send(
+            color=_COLOR["profit"],
+            title="🔑 Zerodha Morning Authentication Successful",
+            fields=fields,
+        )
+
+    def auth_failure(
+        self,
+        user_id: str,
+        error: str,
+    ) -> None:
+        """Sends an authentication failure embed to Discord."""
+        now_str = datetime.now(tz=IST).strftime("%H:%M:%S IST")
+        fields = [
+            ("Broker User ID", f"`{user_id}`", True),
+            ("Auth Status", "Failed ❌", True),
+            ("Time", now_str, True),
+            ("Error Details", f"```{error[:300]}```", False),
+            ("Action Required", "Check TOTP secret & credentials in .env or run auto_login.py manually.", False),
+        ]
+        self._send(
+            color=_COLOR["error"],
+            title="❌ Zerodha Morning Authentication Failed",
+            fields=fields,
+        )
+
     def error(self, message: str) -> None:
         self._send(
             color=_COLOR["error"],
