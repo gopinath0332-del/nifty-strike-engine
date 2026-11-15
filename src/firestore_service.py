@@ -183,3 +183,34 @@ class FirestoreService:
             logger.error("Failed to record trade exit in Firestore for %s: %s", trade_id, exc)
             return False
 
+    def get_closed_trades(
+        self,
+        strategy_name: str | None = None,
+        live_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieve closed trades from Firestore collection.
+        Returns a list of trade dictionaries ordered by entry_time.
+        """
+        if not self.is_connected or self._db is None:
+            logger.debug("Firestore not connected. Skipping get_closed_trades.")
+            return []
+
+        try:
+            query = self._db.collection(self.collection_name).where("status", "==", "CLOSED")
+            if strategy_name:
+                query = query.where("strategy_name", "==", strategy_name)
+            if live_only:
+                query = query.where("live_trade", "==", True)
+
+            docs = query.stream()
+            trades = [doc.to_dict() for doc in docs]
+            # Sort chronologically by entry_time
+            trades.sort(key=lambda t: str(t.get("entry_time", "")))
+            logger.info("Fetched %d closed trades from Firestore.", len(trades))
+            return trades
+        except Exception as exc:
+            logger.error("Failed to fetch closed trades from Firestore: %s", exc)
+            return []
+
+

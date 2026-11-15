@@ -344,6 +344,36 @@ class DiscordNotifier:
             fields=fields,
         )
 
+    def sizing_recommendation(
+        self,
+        headline: str,
+        current_lots: int,
+        recommended_lots: int,
+        action: str,
+        total_trades: int,
+        win_rate: float,
+        net_pnl: float,
+        current_equity: float,
+        drawdown_pct: float,
+        reason: str,
+    ) -> None:
+        """Sends rich position sizing recommendation alert to Discord."""
+        color = _COLOR["profit"] if action == "SCALE_UP" else (_COLOR["loss"] if action == "STEP_DOWN" else _COLOR["info"])
+        fields = [
+            ("Current Size", f"{current_lots} lot(s) ({current_lots * 65} units)", True),
+            ("Recommended Size", f"**{recommended_lots} lot(s)** ({recommended_lots * 65} units)", True),
+            ("Action", f"**{action}**", True),
+            ("Track Record", f"{total_trades} trades (Win Rate: {win_rate:.1f}%)", True),
+            ("Net Profit / Equity", f"₹{net_pnl:+,.2f} (Eq: ₹{current_equity:,.2f})", True),
+            ("Current Drawdown", f"{drawdown_pct:.1f}% from peak", True),
+            ("Guidance", reason, False),
+        ]
+        self._send(
+            color=color,
+            title=f"📊 Sizing Recommendation: {headline}",
+            fields=fields,
+        )
+
     def error(self, message: str) -> None:
         self._send(
             color=_COLOR["error"],

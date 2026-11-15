@@ -36,3 +36,14 @@ timing:
   eod_exit_time: "15:00" # Hard force-close all positions at 15:00 IST
   enforce_market_hours: true # Bypass WebSocket on weekends and outside 09:14-15:30 IST
 
+# Position Sizing & Scaling Recommendations
+sizing:
+  mode: "DYNAMIC"                # FIXED (strictly lot_size) or DYNAMIC (suggests scale-up / step-down)
+  use_broker_balance: true       # In LIVE mode, fetch real-time liquid cash from Zerodha
+  initial_capital: 150000        # Starting capital in INR (used in backtesting & simulation fallback)
+  base_lots: 1                   # Starting lot count (1 lot = 65 units)
+  max_lots: 5                    # Maximum allowable lot count
+  profit_step_per_lot: 40000     # Net profit in INR needed per additional lot
+  min_trades_per_scale: 40       # Minimum trade count on current tier before scaling up
+  step_down_dd_pct: 12.0         # Drawdown % from peak equity to trigger step-down
+

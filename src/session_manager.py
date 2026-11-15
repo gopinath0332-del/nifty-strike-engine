@@ -49,6 +49,7 @@ from src.firestore_service import FirestoreService
 from src.indicators import apply_all
 from src.kite_auth import build_authenticated_kite
 from src.order_manager import OrderManager
+from src.position_sizer import PositionSizer
 from src.signal_engine import SignalEngine
 from src.state_manager import StateManager
 
@@ -124,6 +125,15 @@ class SessionManager:
             eod_exit=time(*settings.eod_exit_hhmm),
             state_manager=self._state_manager,
         )
+        self._sizer = PositionSizer(
+            initial_capital=settings.sizing_initial_capital,
+            base_lots=settings.sizing_base_lots,
+            max_lots=settings.sizing_max_lots,
+            profit_step_per_lot=settings.sizing_profit_step_per_lot,
+            min_trades_per_scale=settings.sizing_min_trades_per_scale,
+            step_down_dd_pct=settings.sizing_step_down_dd_pct,
+            units_per_lot=65,
+        )
         self._order_mgr = OrderManager(
             kite=self._kite,
             signal_engine=self._engine,
@@ -133,7 +143,20 @@ class SessionManager:
             strategy_name=settings.strategy_name,
             firestore_service=self._firestore,
             state_manager=self._state_manager,
+            position_sizer=self._sizer,
+            use_broker_balance=settings.sizing_use_broker_balance,
         )
+
+        # Log initial position sizing & broker balance status
+        try:
+            init_sizing = self._order_mgr.evaluate_sizing_status()
+            logger.info(
+                "Sizing Engine Ready: Current=%d lot(s) | Rec=%d lot(s) | Equity=₹%,.2f | %s",
+                init_sizing.current_lots, init_sizing.recommended_lots,
+                init_sizing.current_equity, init_sizing.reason,
+            )
+        except Exception as exc:
+            logger.debug("Initial sizing evaluation skipped: %s", exc)
 
         # Run startup reconciliation and recovery
         logger.info("Running startup state reconciliation...")

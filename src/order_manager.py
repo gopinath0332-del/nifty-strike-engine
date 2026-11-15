@@ -40,6 +40,7 @@ from kiteconnect import KiteConnect
 from src.discord_notifier import DiscordNotifier
 from src.firestore_service import FirestoreService
 from src.greeks import calculate_greeks
+from src.position_sizer import PositionSizer
 from src.signal_engine import SignalEngine
 from src.strike_selector import StrikeSelector, select_strike
 
@@ -69,6 +70,8 @@ class OrderManager:
         strategy_name: str = "NIFTY Options Buying Strategy v9",
         firestore_service: FirestoreService | None = None,
         state_manager: Any = None,
+        position_sizer: PositionSizer | None = None,
+        use_broker_balance: bool = True,
     ) -> None:
         self._kite   = kite
         self._engine = signal_engine
@@ -78,11 +81,14 @@ class OrderManager:
         self._strategy_name = strategy_name
         self._firestore = firestore_service
         self._state_manager = state_manager
+        self._sizer = position_sizer or PositionSizer(units_per_lot=65)
+        self._use_broker_balance = use_broker_balance
         self._strike_selector = StrikeSelector(kite=kite)
 
         # In-memory position tracking
         self._open_symbol: str | None   = None
         self._entry_price: float | None = None
+        self._entry_time: datetime | None = None
         self._current_trade_id: str | None = None
 
     # ------------------------------------------------------------------
@@ -209,11 +215,116 @@ class OrderManager:
             except Exception as exc:
                 logger.warning("Failed to record exit in state manager: %s", exc)
 
+        # Record to local ledger and evaluate dynamic sizing criteria
+        try:
+            trade_id_val = self._current_trade_id or f"TRADE_{candle_time.strftime('%Y%m%d_%H%M%S')}"
+            self._record_and_evaluate_sizing(
+                trade_id=trade_id_val,
+                symbol=symbol,
+                entry_time=self._entry_time or candle_time,
+                exit_time=candle_time,
+                entry_price=self._entry_price,
+                exit_price=opt_exit_price,
+                exit_reason=reason,
+                pnl=pnl if self._entry_price is not None else 0.0,
+            )
+        except Exception as exc:
+            logger.error("Failed during position sizing evaluation: %s", exc)
+
         # Update state
         self._engine.on_exit_filled()
         self._open_symbol = None
         self._entry_price = None
+        self._entry_time  = None
         self._current_trade_id = None
+
+    def _record_and_evaluate_sizing(
+        self,
+        trade_id: str,
+        symbol: str,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float | None,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+    ) -> None:
+        """Appends closed trade to local ledger and runs position sizing evaluation."""
+        trade_rec = {
+            "trade_id": trade_id,
+            "date": exit_time.astimezone(IST).date().isoformat() if hasattr(exit_time, "astimezone") else str(exit_time)[:10],
+            "entry_time": entry_time.isoformat() if hasattr(entry_time, "isoformat") else str(entry_time),
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
+            "symbol": symbol,
+            "option_type": "CE" if "CE" in symbol else "PE",
+            "strike": int(symbol[-8:-2]) if len(symbol) >= 8 and symbol[-8:-2].isdigit() else 0,
+            "lot_size": self._qty,
+            "entry_price": entry_price or 0.0,
+            "exit_price": exit_price,
+            "exit_reason": exit_reason,
+            "pnl": pnl,
+            "live_trade": self._live,
+        }
+
+        # 1. Save to local CSV ledger
+        self._sizer.save_live_trade(trade_rec)
+
+        # 2. Fetch trade history: Try Firestore first; fallback to local ledger
+        trades: list[dict[str, Any]] = []
+        if self._firestore and self._firestore.is_connected:
+            trades = self._firestore.get_closed_trades(strategy_name=self._strategy_name)
+
+        if not trades:
+            trades = self._sizer.load_live_trades()
+
+        # 3. Evaluate sizing criteria (incorporating real-time Zerodha cash balance)
+        broker_cash = None
+        if self._use_broker_balance and self._live:
+            broker_cash = self._sizer.fetch_broker_cash(self._kite)
+
+        current_lots = max(1, self._qty // 65)
+        decision = self._sizer.evaluate(trades, current_lots=current_lots, broker_capital=broker_cash)
+
+        logger.info(
+            "[SIZING ENGINE] %s | Current: %d lot(s) | Rec: %d lot(s) | PnL=₹%+,.2f | DD=%.1f%% | %s",
+            decision.headline, decision.current_lots, decision.recommended_lots,
+            decision.net_pnl, decision.drawdown_pct, decision.reason,
+        )
+
+        # 4. Trigger alert on Scale-Up, Step-Down, or every 10 trades milestone
+        should_alert = (
+            decision.action in ("SCALE_UP", "STEP_DOWN")
+            or (decision.total_trades > 0 and decision.total_trades % 10 == 0)
+        )
+
+        if should_alert:
+            self._notify.sizing_recommendation(
+                headline=decision.headline,
+                current_lots=decision.current_lots,
+                recommended_lots=decision.recommended_lots,
+                action=decision.action,
+                total_trades=decision.total_trades,
+                win_rate=decision.win_rate,
+                net_pnl=decision.net_pnl,
+                current_equity=decision.current_equity,
+                drawdown_pct=decision.drawdown_pct,
+                reason=decision.reason,
+            )
+
+    def evaluate_sizing_status(self) -> SizingDecision:
+        """Runs a standalone sizing evaluation using current history and Zerodha cash."""
+        trades: list[dict[str, Any]] = []
+        if self._firestore and self._firestore.is_connected:
+            trades = self._firestore.get_closed_trades(strategy_name=self._strategy_name)
+        if not trades:
+            trades = self._sizer.load_live_trades()
+
+        broker_cash = None
+        if self._use_broker_balance and self._live:
+            broker_cash = self._sizer.fetch_broker_cash(self._kite)
+
+        current_lots = max(1, self._qty // 65)
+        return self._sizer.evaluate(trades, current_lots=current_lots, broker_capital=broker_cash)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -282,6 +393,7 @@ class OrderManager:
         # Update state regardless of mode so logic continues correctly
         self._open_symbol = symbol
         self._entry_price = fill_price
+        self._entry_time  = candle_time
         self._engine.on_entry_filled(option_type)
 
         # Send Discord alert

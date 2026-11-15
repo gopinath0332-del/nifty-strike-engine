@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import get_settings
 from src.indicators import apply_all
+from src.position_sizer import PositionSizer
 from src.signal_engine import SignalEngine
 from src.strike_selector import select_strike
 
@@ -214,15 +215,48 @@ def run_backtest():
     print(f"Exit Reasons         : {exit_reasons}")
     print("=" * 70)
 
+    # Dynamic Position Sizing Simulation
+    print("\n" + "=" * 70)
+    print("  DYNAMIC POSITION SIZING SIMULATION (Fixed 1-Lot vs. Dynamic Scaling)")
+    print("=" * 70)
+    sizer = PositionSizer(
+        initial_capital=cfg.sizing_initial_capital,
+        base_lots=cfg.sizing_base_lots,
+        max_lots=cfg.sizing_max_lots,
+        profit_step_per_lot=cfg.sizing_profit_step_per_lot,
+        min_trades_per_scale=cfg.sizing_min_trades_per_scale,
+        step_down_dd_pct=cfg.sizing_step_down_dd_pct,
+        units_per_lot=cfg.lot_size,
+    )
+    sim_df, sz_metrics = sizer.simulate_backtest(trades_df)
+
+    print(f"Starting Capital         : ₹{sz_metrics['initial_capital']:,.2f}")
+    print(f"Fixed 1-Lot Net P&L      : ₹{sz_metrics['fixed_net_pnl']:+,.2f} (Final Equity: ₹{sz_metrics['final_fixed_equity']:,.2f})")
+    print(f"Dynamic Scaled Net P&L   : ₹{sz_metrics['dynamic_net_pnl']:+,.2f} (Final Equity: ₹{sz_metrics['final_dynamic_equity']:,.2f})")
+    print(f"Net Profit Uplift        : {sz_metrics['pnl_uplift_pct']:+.1f}%")
+    print(f"Fixed Max Drawdown (₹)   : ₹{sz_metrics['fixed_max_dd_inr']:,.2f}")
+    print(f"Dynamic Max Drawdown (₹) : ₹{sz_metrics['dynamic_max_dd_inr']:,.2f} ({sz_metrics['dynamic_max_dd_pct']:.2f}% of peak equity)")
+    print(f"Max Lots Reached         : {sz_metrics['max_lots_reached']} lot(s) ({sz_metrics['max_lots_reached'] * cfg.lot_size} units)")
+
+    scale_events = sz_metrics.get("scale_events", [])
+    if scale_events:
+        print("\n  Scaling Timeline Events:")
+        for ev in scale_events:
+            print(f"    • [{ev['date']}] Trade #{ev['trade_num']:03d} | {ev['type']} -> {ev['details']}")
+    else:
+        print("\n  No scaling events triggered (Criteria not reached during period).")
+
+    print("=" * 70)
+
     # Save detailed trade ledger to CSV (graceful fallback if Excel has the file open)
     ledger_path = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_2026.csv")
     saved_csv = ledger_path
     try:
-        trades_df.to_csv(ledger_path, index=False)
-        print(f"Detailed trade ledger saved to: {ledger_path}")
+        sim_df.to_csv(ledger_path, index=False)
+        print(f"\nDetailed trade ledger (with dynamic sizing) saved to: {ledger_path}")
     except PermissionError:
         alt_path = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trades_latest.csv")
-        trades_df.to_csv(alt_path, index=False)
+        sim_df.to_csv(alt_path, index=False)
         saved_csv = alt_path
         print(f"[Notice] backtest_trades_2026.csv is open in Excel; saved to: {alt_path}")
 
@@ -231,13 +265,15 @@ def run_backtest():
     generate_report(csv_path=saved_csv)
 
     # Display monthly breakdown
-    trades_df["month"] = pd.to_datetime(trades_df["date"]).dt.strftime("%Y-%m")
-    monthly = trades_df.groupby("month").agg(
+    sim_df["month"] = pd.to_datetime(sim_df["date"]).dt.strftime("%Y-%m")
+    monthly = sim_df.groupby("month").agg(
         trades=("pnl", "count"),
         win_rate=("pnl", lambda x: f"{(x > 0).mean() * 100:.1f}%"),
-        net_pnl=("pnl", "sum"),
+        fixed_pnl=("pnl", "sum"),
+        dynamic_pnl=("dynamic_pnl", "sum"),
+        avg_lots=("dynamic_lots", "mean"),
     )
-    print("\nMonthly Performance Breakdown:")
+    print("\nMonthly Performance Breakdown (Fixed vs Dynamic):")
     print(monthly.to_string())
 
 

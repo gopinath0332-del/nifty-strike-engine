@@ -101,6 +101,25 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
     if "enforce_market_hours" in timing:
         parsed["enforce_market_hours"] = bool(timing["enforce_market_hours"])
 
+    # Sizing settings
+    sz = doc.get("sizing", {})
+    if "mode" in sz:
+        parsed["sizing_mode"] = str(sz["mode"]).strip().upper()
+    if "use_broker_balance" in sz:
+        parsed["sizing_use_broker_balance"] = bool(sz["use_broker_balance"])
+    if "initial_capital" in sz:
+        parsed["sizing_initial_capital"] = float(sz["initial_capital"])
+    if "base_lots" in sz:
+        parsed["sizing_base_lots"] = int(sz["base_lots"])
+    if "max_lots" in sz:
+        parsed["sizing_max_lots"] = int(sz["max_lots"])
+    if "profit_step_per_lot" in sz:
+        parsed["sizing_profit_step_per_lot"] = float(sz["profit_step_per_lot"])
+    if "min_trades_per_scale" in sz:
+        parsed["sizing_min_trades_per_scale"] = int(sz["min_trades_per_scale"])
+    if "step_down_dd_pct" in sz:
+        parsed["sizing_step_down_dd_pct"] = float(sz["step_down_dd_pct"])
+
     return parsed
 
 
@@ -151,6 +170,16 @@ class Settings(BaseSettings):
     entry_cutoff_time: str
     eod_exit_time: str
     enforce_market_hours: bool = True
+
+    # Sizing settings
+    sizing_mode: str = "DYNAMIC"
+    sizing_use_broker_balance: bool = True
+    sizing_initial_capital: float = 150000.0
+    sizing_base_lots: int = 1
+    sizing_max_lots: int = 5
+    sizing_profit_step_per_lot: float = 40000.0
+    sizing_min_trades_per_scale: int = 40
+    sizing_step_down_dd_pct: float = 12.0
 
     @classmethod
     def load(cls, yaml_path: str = SETTINGS_YML_PATH) -> "Settings":
