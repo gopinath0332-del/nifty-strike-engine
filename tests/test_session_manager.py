@@ -73,7 +73,7 @@ def test_preseed_historical_candles_success():
     now_ist = datetime.now(tz=IST)
     yesterday = now_ist - timedelta(days=1)
 
-    # 60 dummy historical candles
+    # 300 dummy historical candles
     sample_records = [
         {
             "date": yesterday + timedelta(minutes=5 * i),
@@ -83,7 +83,7 @@ def test_preseed_historical_candles_success():
             "close": 24005.0 + i,
             "volume": 1000 + i,
         }
-        for i in range(60)
+        for i in range(300)
     ]
     mock_kite.historical_data.return_value = sample_records
 
@@ -100,9 +100,9 @@ def test_preseed_historical_candles_success():
         state_manager=mock_state,
     )
 
-    # sm.__init__ already calls preseed_historical_candles(count=50)
-    assert len(sm._candle_buffer) == 50
-    mock_kite.historical_data.assert_called_once()
+    # sm.__init__ calls preseed_historical_candles(count=250) and fetch_daily_pivots()
+    assert len(sm._candle_buffer) == 250
+    assert mock_kite.historical_data.call_count == 2
 
     # Check candle fields
     first_candle = sm._candle_buffer[0]

@@ -164,17 +164,27 @@ def bollinger_bands(
 # Traditional Pivot Points (Daily)
 # ======================================================================
 
-def traditional_pivots(df: pd.DataFrame) -> pd.DataFrame:
+def traditional_pivots(
+    df: pd.DataFrame,
+    daily_pivots: dict[str, float] | None = None,
+) -> pd.DataFrame:
     """
     Compute Traditional Daily Pivot Points and append columns:
         pivot, r1, s1
 
-    Uses *previous* trading day's High / Low / Close — exactly as
-    TradingView's ``ta.pivot_point_levels("Traditional", daily_anchor)``.
+    If daily_pivots is provided (e.g. {"pivot": P, "r1": R1, "s1": S1}),
+    it uses those official values directly (matching TradingView exactly).
+    Otherwise, falls back to computing from df grouped by 'date' shifted by 1.
 
     Requires df to have a ``date`` column (date portion of IST timestamp)
-    for grouping. The function groups candles by date and shifts one day.
+    for grouping when daily_pivots is None.
     """
+    if daily_pivots is not None and "pivot" in daily_pivots:
+        df["pivot"] = float(daily_pivots.get("pivot", np.nan))
+        df["r1"]    = float(daily_pivots.get("r1", np.nan))
+        df["s1"]    = float(daily_pivots.get("s1", np.nan))
+        return df
+
     if "date" not in df.columns:
         raise ValueError("DataFrame must have a 'date' column (date portion of IST timestamp)")
 
@@ -208,11 +218,12 @@ def apply_all(
     rsi_length: int = 14,
     bb_length: int = 20,
     bb_mult: float = 2.0,
+    daily_pivots: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Apply Supertrend, RSI, Bollinger Bands, and Pivot columns to df."""
     df = supertrend(df, atr_period=st_atr_period, factor=st_factor, buffer_points=st_buffer_points)
     df = rsi(df, length=rsi_length)
     df = bollinger_bands(df, length=bb_length, mult=bb_mult)
-    df = traditional_pivots(df)
+    df = traditional_pivots(df, daily_pivots=daily_pivots)
     return df
 

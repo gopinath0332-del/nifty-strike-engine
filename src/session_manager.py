@@ -124,6 +124,7 @@ class SessionManager:
             entry_cutoff=time(*settings.entry_cutoff_hhmm),
             eod_exit=time(*settings.eod_exit_hhmm),
             state_manager=self._state_manager,
+            skip_first_candle=getattr(settings, "skip_first_candle", False),
         )
         self._sizer = PositionSizer(
             initial_capital=settings.sizing_initial_capital,
@@ -169,14 +170,20 @@ class SessionManager:
         )
         logger.info("Reconciliation complete: %s", rec_result.get("status"))
         self._candle_builder = CandleBuilder(
-            interval_minutes=settings.candle_interval_minutes
+            interval_minutes=settings.candle_interval_minutes,
+            market_hours_only=settings.enforce_market_hours,
         )
 
         # Rolling OHLCV buffer (deque of dicts → converted to DataFrame on demand)
-        self._candle_buffer: deque[dict] = deque(maxlen=200)
+        self._candle_buffer: deque[dict] = deque(maxlen=300)
+
+        # Cache official Daily Pivots (P, R1, S1) from Kite interval="day"
+        self._daily_pivots: dict[str, float] | None = None
+        self.fetch_daily_pivots()
 
         # Pre-seed historical candles on startup so indicators & pivots are ready
-        self.preseed_historical_candles(count=50)
+        preseed_cnt = getattr(settings, "warmup_candles", 250)
+        self.preseed_historical_candles(count=preseed_cnt)
 
         # Latest known NIFTY spot price (from ticks)
         self._spot: float = 0.0
@@ -249,12 +256,64 @@ class SessionManager:
     def _start_active_session(self) -> None:
         """Starts WebSocket and watchdog for an active trading session."""
         if len(self._candle_buffer) < MIN_CANDLES:
-            self.preseed_historical_candles(count=50)
+            preseed_cnt = getattr(self._s, "warmup_candles", 250)
+            self.preseed_historical_candles(count=preseed_cnt)
         self._send_morning_briefing()
         threading.Thread(target=self._market_close_watchdog, daemon=True).start()
         self._start_ticker()
 
-    def preseed_historical_candles(self, count: int = 50) -> int:
+    def fetch_daily_pivots(self) -> dict[str, float] | None:
+        """
+        Fetches the official previous trading day's bar (interval='day') from Kite
+        and calculates Traditional Daily Pivot Points: P, R1, S1.
+        Matches TradingView's ta.pivot_point_levels('Traditional', 'D') exactly.
+        """
+        if not self._kite:
+            return self._daily_pivots
+
+        try:
+            today = datetime.now(tz=IST).date()
+            from_dt = today - timedelta(days=6)
+            records = self._kite.historical_data(
+                instrument_token=NIFTY_TOKEN,
+                from_date=from_dt,
+                to_date=today,
+                interval="day",
+            )
+            if records:
+                prev_bar = records[-1]
+                rec_date = prev_bar.get("date")
+                if hasattr(rec_date, "date") and rec_date.date() == today and len(records) >= 2:
+                    prev_bar = records[-2]
+
+                ph = float(prev_bar["high"])
+                pl = float(prev_bar["low"])
+                pc = float(prev_bar["close"])
+
+                p = (ph + pl + pc) / 3.0
+                pivot = round(p, 2)
+                r1 = round(2.0 * p - pl, 2)
+                s1 = round(2.0 * p - ph, 2)
+
+                self._daily_pivots = {
+                    "pivot": pivot,
+                    "r1": r1,
+                    "s1": s1,
+                    "prev_close": pc,
+                    "prev_high": ph,
+                    "prev_low": pl,
+                }
+                logger.info(
+                    "Official Daily Pivots cached: P=%.2f, R1=%.2f, S1=%.2f (from prev bar H=%.2f, L=%.2f, C=%.2f)",
+                    pivot, r1, s1, ph, pl, pc,
+                )
+                return self._daily_pivots
+        except Exception as exc:
+            logger.debug("Could not compute daily pivots from Kite daily data: %s", exc)
+
+        return self._daily_pivots
+
+    def preseed_historical_candles(self, count: int = 250) -> int:
         """
         Pre-seeds historical NIFTY 50 candles into `_candle_buffer`.
 
@@ -271,7 +330,7 @@ class SessionManager:
 
         try:
             now_ist = datetime.now(tz=IST)
-            from_dt = now_ist.date() - timedelta(days=6)
+            from_dt = now_ist.date() - timedelta(days=10)
             interval_str = (
                 "minute"
                 if self._s.candle_interval_minutes == 1
@@ -356,32 +415,14 @@ class SessionManager:
             logger.debug("Could not fetch margins: %s", exc)
 
         # 3. Fetch previous day High, Low, Close and compute Pivots
-        try:
-            today = datetime.now(tz=IST).date()
-            from_dt = today - timedelta(days=6)
-            records = self._kite.historical_data(
-                instrument_token=NIFTY_TOKEN,
-                from_date=from_dt,
-                to_date=today,
-                interval="day",
-            )
-            if records:
-                prev_bar = records[-1]
-                rec_date = prev_bar.get("date")
-                if hasattr(rec_date, "date") and rec_date.date() == today and len(records) >= 2:
-                    prev_bar = records[-2]
+        if not self._daily_pivots:
+            self.fetch_daily_pivots()
 
-                ph = float(prev_bar["high"])
-                pl = float(prev_bar["low"])
-                pc = float(prev_bar["close"])
-
-                prev_close = pc
-                p = (ph + pl + pc) / 3.0
-                pivot = round(p, 2)
-                r1 = round(2.0 * p - pl, 2)
-                s1 = round(2.0 * p - ph, 2)
-        except Exception as exc:
-            logger.debug("Could not compute daily pivots from historical data: %s", exc)
+        if self._daily_pivots:
+            pivot = self._daily_pivots.get("pivot")
+            r1 = self._daily_pivots.get("r1")
+            s1 = self._daily_pivots.get("s1")
+            prev_close = self._daily_pivots.get("prev_close")
 
         # 4. Dispatch Discord briefing
         try:
@@ -620,6 +661,7 @@ class SessionManager:
                 rsi_length=self._s.rsi_length,
                 bb_length=self._s.bb_length,
                 bb_mult=self._s.bb_mult,
+                daily_pivots=self._daily_pivots,
             )
 
             # Extract the latest row's indicator values

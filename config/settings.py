@@ -100,6 +100,10 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
         parsed["eod_exit_time"] = str(timing["eod_exit_time"]).strip()
     if "enforce_market_hours" in timing:
         parsed["enforce_market_hours"] = bool(timing["enforce_market_hours"])
+    if "skip_first_candle" in timing:
+        parsed["skip_first_candle"] = bool(timing["skip_first_candle"])
+    if "warmup_candles" in timing:
+        parsed["warmup_candles"] = int(timing["warmup_candles"])
 
     # Sizing settings
     sz = doc.get("sizing", {})
@@ -170,6 +174,8 @@ class Settings(BaseSettings):
     entry_cutoff_time: str
     eod_exit_time: str
     enforce_market_hours: bool = True
+    skip_first_candle: bool = False
+    warmup_candles: int = 250
 
     # Sizing settings
     sizing_mode: str = "DYNAMIC"

@@ -35,6 +35,8 @@ timing:
   entry_cutoff_time: "14:45" # No new entries after 14:45 IST
   eod_exit_time: "15:00" # Hard force-close all positions at 15:00 IST
   enforce_market_hours: true # Bypass WebSocket on weekends and outside 09:14-15:30 IST
+  skip_first_candle: true # Skip entry on opening candle of the day (09:15-09:20) to avoid gap traps
+  warmup_candles: 250 # Number of historical candles pre-seeded on startup for indicator convergence
 
 # Position Sizing & Scaling Recommendations
 sizing:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 try:
     import zoneinfo
@@ -53,10 +53,14 @@ class CandleBuilder:
     ----------
     interval_minutes : int
         Width of each candle in minutes (default 3).
+    market_hours_only : bool
+        If True (default), ticks outside regular NSE trading hours
+        (before 09:15:00 IST or at/after 15:30:00 IST) are ignored.
     """
 
-    def __init__(self, interval_minutes: int = 3) -> None:
+    def __init__(self, interval_minutes: int = 3, market_hours_only: bool = True) -> None:
         self.interval_minutes = interval_minutes
+        self.market_hours_only = market_hours_only
         self._current: Candle | None = None
         self._current_slot: int | None = None
         self.last_closed_candle: Candle | None = None
@@ -78,7 +82,12 @@ class CandleBuilder:
         volume : cumulative volume from exchange (we store delta per candle)
         ts     : tick timestamp (timezone-aware; will be converted to IST)
         """
-        ist_ts  = ts.astimezone(IST)
+        ist_ts = ts.astimezone(IST)
+
+        # Ignore ticks outside regular NSE trading hours (e.g. pre-market ticks at 09:14)
+        if self.market_hours_only and (ist_ts.time() < time(9, 15) or ist_ts.time() >= time(15, 30)):
+            return False
+
         slot    = self._candle_slot(ist_ts)
         closed  = False
 

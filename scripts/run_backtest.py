@@ -83,6 +83,7 @@ def run_backtest():
     engine = SignalEngine(
         entry_cutoff=time(*cfg.entry_cutoff_hhmm),
         eod_exit=time(*cfg.eod_exit_hhmm),
+        skip_first_candle=getattr(cfg, "skip_first_candle", False),
     )
 
     trades = []

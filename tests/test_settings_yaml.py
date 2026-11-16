@@ -25,6 +25,8 @@ def test_yaml_settings_parsing() -> None:
     assert data["candle_interval_minutes"] == 5
     assert data["entry_cutoff_time"] == "14:45"
     assert data["eod_exit_time"] == "15:00"
+    assert data["skip_first_candle"] is True
+    assert data["warmup_candles"] == 250
 
 
 def test_settings_load_with_mock_env(monkeypatch) -> None:

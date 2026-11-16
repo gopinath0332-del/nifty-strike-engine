@@ -224,3 +224,32 @@ def test_daily_counter_resets_on_new_day() -> None:
     result = engine.evaluate(candle_day2, ind)
     assert engine.trade_today == 0   # counter was reset
     assert result.ce_entry is True   # new trade allowed
+
+
+def test_skip_first_candle_filter() -> None:
+    ind = {
+        "bull_trend": True,
+        "bear_trend": False,
+        "rsi": 75.0,
+        "upper_bb": 24050.0,
+        "lower_bb": 23900.0,
+        "r1": 24020.0,
+        "s1": 23850.0,
+    }
+
+    # 1. Opening candle (09:15) with skip_first_candle=True -> should NOT trigger entry
+    engine_skip = SignalEngine(skip_first_candle=True)
+    candle_915 = make_candle(close=24100.0, hour=9, minute=15)
+    result_skip = engine_skip.evaluate(candle_915, ind)
+    assert result_skip.ce_entry is False
+    assert result_skip.pe_entry is False
+
+    # 2. Subsequent candle (09:20) with skip_first_candle=True -> should trigger entry
+    candle_920 = make_candle(close=24100.0, hour=9, minute=20)
+    result_subsequent = engine_skip.evaluate(candle_920, ind)
+    assert result_subsequent.ce_entry is True
+
+    # 3. Opening candle (09:15) with skip_first_candle=False -> should trigger entry normally
+    engine_no_skip = SignalEngine(skip_first_candle=False)
+    result_no_skip = engine_no_skip.evaluate(candle_915, ind)
+    assert result_no_skip.ce_entry is True

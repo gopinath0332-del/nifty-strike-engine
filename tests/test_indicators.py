@@ -103,6 +103,14 @@ def test_traditional_pivots(sample_ohlcv: pd.DataFrame) -> None:
     assert (day2["pivot"] > day2["s1"]).all()
 
 
+def test_traditional_pivots_injected_daily_pivots(sample_ohlcv: pd.DataFrame) -> None:
+    official_pivots = {"pivot": 25275.70, "r1": 25408.45, "s1": 25166.60}
+    df = traditional_pivots(sample_ohlcv.copy(), daily_pivots=official_pivots)
+    assert (df["pivot"] == 25275.70).all()
+    assert (df["r1"] == 25408.45).all()
+    assert (df["s1"] == 25166.60).all()
+
+
 def test_apply_all_chains_correctly(sample_ohlcv: pd.DataFrame) -> None:
     df = apply_all(sample_ohlcv.copy())
     expected_cols = [

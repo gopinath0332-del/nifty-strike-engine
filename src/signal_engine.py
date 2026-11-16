@@ -95,10 +95,12 @@ class SignalEngine:
         entry_cutoff: time = time(14, 45),
         eod_exit: time = time(15, 0),
         state_manager: Any = None,
+        skip_first_candle: bool = False,
     ) -> None:
         self.entry_cutoff = entry_cutoff
         self.eod_exit     = eod_exit
         self._state_manager = state_manager
+        self.skip_first_candle = skip_first_candle
 
         # Mutable state
         self._position: str | None = None   # None | 'CE' | 'PE'
@@ -233,6 +235,11 @@ class SignalEngine:
             result.exit_pe     = True
             result.exit_reason = "ST Flip Exit"
             logger.info("Supertrend flip exit (PE) at %s", candle_time)
+            return result
+
+        # ---- Opening candle filter (avoid gap traps / opening volatility) -
+        if self.skip_first_candle and candle_time <= time(9, 15):
+            logger.info("Skipping entry on opening candle of the day (%s) due to skip_first_candle=True", candle_time)
             return result
 
         # ---- Entry conditions ----------------------------------------
