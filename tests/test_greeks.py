@@ -83,6 +83,42 @@ def test_parse_expiry_from_symbol():
     assert expiry_dt.minute == 30
 
 
+def test_parse_expiry_from_monthly_and_weekly_symbols():
+    now = datetime(2026, 11, 17, 9, 20, tzinfo=IST)
+
+    # Monthly NSE symbol
+    sym_monthly = "NIFTY26NOV25250CE"
+    exp_monthly = parse_expiry_from_symbol(sym_monthly, now)
+    assert exp_monthly.year == 2026
+    assert exp_monthly.month == 11
+    assert exp_monthly.day >= 20  # Late November Thursday
+
+    # Weekly NSE symbol
+    sym_weekly = "NIFTY26N1725300CE"
+    exp_weekly = parse_expiry_from_symbol(sym_weekly, now)
+    assert exp_weekly.year == 2026
+    assert exp_weekly.month == 11
+    assert exp_weekly.day == 17
+
+
+def test_calculate_greeks_with_explicit_expiry():
+    entry_time = datetime(2026, 11, 17, 9, 20, tzinfo=IST)
+    exp_date = (entry_time + timedelta(days=6)).date()
+    result = calculate_greeks(
+        symbol="NIFTY26NOV25250CE",
+        spot=25344.5,
+        strike=25250.0,
+        option_type="CE",
+        premium=263.25,
+        candle_time=entry_time,
+        expiry_date=exp_date,
+    )
+    # IV should be around 14-16%, NOT 246%!
+    assert 10.0 <= result.iv <= 25.0
+    assert 0.50 <= result.delta <= 0.70
+    assert pytest.approx(result.time_to_expiry_days, abs=0.5) == 6.25
+
+
 def test_calculate_greeks_end_to_end():
     entry_time = datetime(2026, 11, 9, 9, 50, tzinfo=IST)
     result = calculate_greeks(

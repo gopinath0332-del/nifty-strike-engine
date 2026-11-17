@@ -76,9 +76,21 @@ class StrikeSelector:
         self._kite = kite
         self._cached_instruments: list[dict[str, Any]] | None = None
         self._cache_date: datetime.date | None = None
+        self._last_selected_expiry: datetime.date | None = None
+        self._last_rolled: bool = False
 
     def set_kite(self, kite: KiteConnect) -> None:
         self._kite = kite
+
+    @property
+    def last_selected_expiry(self) -> datetime.date | None:
+        """The expiry date chosen in the most recent target expiry evaluation."""
+        return self._last_selected_expiry
+
+    @property
+    def last_rolled(self) -> bool:
+        """Whether the last expiry was rolled over because today was expiry day."""
+        return self._last_rolled
 
     def get_instruments(self) -> list[dict[str, Any]]:
         """Fetch and cache NFO instruments list for current day."""
@@ -104,6 +116,14 @@ class StrikeSelector:
             logger.warning("Failed to fetch Kite instruments: %s", exc)
             return []
 
+    def get_instrument(self, symbol: str) -> dict[str, Any] | None:
+        """Find cached instrument by tradingsymbol."""
+        instruments = self.get_instruments()
+        for inst in instruments:
+            if inst.get("tradingsymbol") == symbol:
+                return inst
+        return None
+
     def get_target_expiry(
         self,
         current_date: datetime.date | None = None,
@@ -119,13 +139,19 @@ class StrikeSelector:
         )))
 
         if not valid_expiries:
+            self._last_selected_expiry = None
+            self._last_rolled = False
             return None
 
         earliest = valid_expiries[0]
         if earliest == today and roll_if_today and len(valid_expiries) > 1:
             logger.info("Today is expiry day (%s). Rolling to next expiry (%s).", earliest, valid_expiries[1])
+            self._last_rolled = True
+            self._last_selected_expiry = valid_expiries[1]
             return valid_expiries[1]
 
+        self._last_rolled = False
+        self._last_selected_expiry = earliest
         return earliest
 
     def select_by_premium(

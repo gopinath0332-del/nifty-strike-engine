@@ -94,12 +94,17 @@ class DiscordNotifier:
         entry_price: float | None = None,
         iv: float | None = None,
         delta: float | None = None,
+        expiry: str | None = None,
     ) -> None:
         fields = [
             ("Contract", symbol, True),
+        ]
+        if expiry:
+            fields.append(("Expiry", str(expiry), True))
+        fields.extend([
             ("NIFTY Spot", f"₹{spot:,.2f}", True),
             ("Lot Size", f"{qty} units (1 lot)", True),
-        ]
+        ])
         if entry_price is not None:
             margin = entry_price * qty
             fields.extend([
@@ -134,12 +139,17 @@ class DiscordNotifier:
         entry_price: float | None = None,
         iv: float | None = None,
         delta: float | None = None,
+        expiry: str | None = None,
     ) -> None:
         fields = [
             ("Contract", symbol, True),
+        ]
+        if expiry:
+            fields.append(("Expiry", str(expiry), True))
+        fields.extend([
             ("NIFTY Spot", f"₹{spot:,.2f}", True),
             ("Lot Size", f"{qty} units (1 lot)", True),
-        ]
+        ])
         if entry_price is not None:
             margin = entry_price * qty
             fields.extend([

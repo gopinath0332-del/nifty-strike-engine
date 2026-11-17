@@ -140,3 +140,37 @@ def test_select_by_premium_with_mock_kite() -> None:
 
     assert symbol == "NIFTY26N1224600CE"
     assert ltp == 240.0
+    assert selector.last_selected_expiry == target_expiry
+    assert selector.last_rolled is False
+
+    # Instrument lookup test
+    inst = selector.get_instrument("NIFTY26N1224600CE")
+    assert inst is not None
+    assert inst["strike"] == 24600.0
+
+
+def test_select_by_premium_rolls_on_expiry_day() -> None:
+    mock_kite = MagicMock()
+    today = datetime.date(2026, 11, 17)
+    next_expiry = datetime.date(2026, 11, 23)
+
+    mock_kite.instruments.return_value = [
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today, "strike": 25250.0, "tradingsymbol": "NIFTY26N1725250CE"},
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": next_expiry, "strike": 25250.0, "tradingsymbol": "NIFTY26NOV25250CE"},
+    ]
+    mock_kite.ltp.return_value = {
+        "NFO:NIFTY26NOV25250CE": {"last_price": 263.25},
+    }
+
+    selector = StrikeSelector(kite=mock_kite)
+    symbol, ltp = selector.select_by_premium(
+        25344.5,
+        "CE",
+        current_date=today,
+        roll_if_today=True,
+    )
+
+    assert symbol == "NIFTY26NOV25250CE"
+    assert ltp == 263.25
+    assert selector.last_rolled is True
+    assert selector.last_selected_expiry == next_expiry

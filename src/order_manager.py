@@ -25,6 +25,7 @@ Order details
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -403,7 +404,19 @@ class OrderManager:
         r1       = indicators.get("r1", 0.0)
         s1       = indicators.get("s1", 0.0)
         # Strike & Entry Greeks (IV & Delta)
-        strike_num = int(symbol[-8:-2]) if len(symbol) >= 8 and symbol[-8:-2].isdigit() else int(round(spot / 50.0) * 50)
+        inst = self._strike_selector.get_instrument(symbol) if hasattr(self._strike_selector, "get_instrument") else None
+        strike_num = int(inst["strike"]) if (inst and inst.get("strike")) else None
+        if not strike_num:
+            match = re.search(r"(\d{4,5})(?:CE|PE)$", symbol)
+            strike_num = int(match.group(1)) if match else int(round(spot / 50.0) * 50)
+
+        expiry_date = inst.get("expiry") if inst else getattr(self._strike_selector, "last_selected_expiry", None)
+        expiry_display = None
+        if expiry_date:
+            is_rolled = getattr(self._strike_selector, "last_rolled", False)
+            roll_note = " (Rolled - Next Expiry)" if is_rolled else ""
+            expiry_display = f"{expiry_date.strftime('%d-%b-%Y')}{roll_note}"
+
         final_premium = fill_price or estimated_ltp or (spot * 0.01)
 
         greeks = None
@@ -415,6 +428,7 @@ class OrderManager:
                 option_type=option_type,
                 premium=final_premium,
                 candle_time=candle_time,
+                expiry_date=expiry_date,
             )
             logger.info(
                 "[ENTRY GREEKS] %s %s Strike=%d | Premium=₹%.2f | IV=%.2f%% | Delta=%+.3f | DTE=%.1fd",
@@ -475,6 +489,7 @@ class OrderManager:
                 entry_price=fill_price,
                 iv=iv_val,
                 delta=delta_val,
+                expiry=expiry_display,
             )
         else:
             self._notify.pe_entry(
@@ -483,6 +498,7 @@ class OrderManager:
                 entry_price=fill_price,
                 iv=iv_val,
                 delta=delta_val,
+                expiry=expiry_display,
             )
 
     def _fetch_fill_price(self, order_id: str) -> float | None:

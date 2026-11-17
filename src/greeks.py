@@ -11,11 +11,12 @@ Outputs:
 
 from __future__ import annotations
 
+import calendar
 import logging
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 try:
     import zoneinfo
@@ -144,14 +145,50 @@ def calculate_iv(
 
 def parse_expiry_from_symbol(symbol: str, default_time: datetime) -> datetime:
     """
-    Parses expiry date from NIFTY tradingsymbol, e.g. 'NIFTY12NOV2624600CE' -> 2026-11-12 15:30 IST.
+    Parses expiry date from NIFTY tradingsymbol across various NSE formats:
+      - Fallback DDMMMYY:  'NIFTY12NOV2624600CE' -> 2026-11-12 15:30 IST
+      - NSE Weekly YYMDD:  'NIFTY26N1725300CE'   -> 2026-11-17 15:30 IST
+      - NSE Monthly YYMMM: 'NIFTY26NOV25250CE'   -> Nov 2026 (last Thursday) 15:30 IST
     """
-    pattern = r"NIFTY(\d{1,2})([A-Z]{3})(\d{2})"
-    match = re.search(pattern, symbol.upper())
-    if match:
-        day, month, yr = match.groups()
+    sym = symbol.upper()
+
+    # 1. Fallback / Test format: DDMMMYY (e.g. 12NOV26 or 29MAY25)
+    match_ddmmmyy = re.search(r"NIFTY(\d{2})([A-Z]{3})(\d{2})\d{4,5}(?:CE|PE)", sym)
+    if match_ddmmmyy:
+        day, month, yr = match_ddmmmyy.groups()
         try:
             exp_date = datetime.strptime(f"{day}{month}20{yr}", "%d%b%Y").date()
+            return datetime.combine(exp_date, datetime.min.time().replace(hour=15, minute=30), tzinfo=IST)
+        except Exception:
+            pass
+
+    # 2. NSE Weekly format: YYMDD (e.g. 26N17 for 17-Nov-2026)
+    match_weekly = re.search(r"NIFTY(\d{2})([1-9OND])(\d{2})\d{4,5}(?:CE|PE)", sym)
+    if match_weekly:
+        yr_str, m_code, day_str = match_weekly.groups()
+        month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12}
+        if m_code in month_map:
+            try:
+                exp_date = date(2000 + int(yr_str), month_map[m_code], int(day_str))
+                return datetime.combine(exp_date, datetime.min.time().replace(hour=15, minute=30), tzinfo=IST)
+            except Exception:
+                pass
+
+    # 3. NSE Monthly format: YYMMM (e.g. 26NOV for Nov 2026 monthly expiry)
+    match_monthly = re.search(r"NIFTY(\d{2})([A-Z]{3})\d{4,5}(?:CE|PE)", sym)
+    if match_monthly:
+        yr_str, mon_str = match_monthly.groups()
+        try:
+            mon_num = datetime.strptime(mon_str, "%b").month
+            year = 2000 + int(yr_str)
+            # Find the last Thursday of the month
+            _, num_days = calendar.monthrange(year, mon_num)
+            last_thursday = 1
+            for d in range(num_days, 0, -1):
+                if date(year, mon_num, d).weekday() == 3:  # 3 = Thursday
+                    last_thursday = d
+                    break
+            exp_date = date(year, mon_num, last_thursday)
             return datetime.combine(exp_date, datetime.min.time().replace(hour=15, minute=30), tzinfo=IST)
         except Exception:
             pass
@@ -168,12 +205,16 @@ def calculate_greeks(
     premium: float,
     candle_time: datetime,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    expiry_date: date | None = None,
 ) -> GreeksResult:
     """
     Top-level helper to calculate contract IV and Delta at trade entry.
     """
     is_call = option_type.upper() == "CE"
-    expiry_dt = parse_expiry_from_symbol(symbol, candle_time)
+    if expiry_date is not None:
+        expiry_dt = datetime.combine(expiry_date, datetime.min.time().replace(hour=15, minute=30), tzinfo=IST)
+    else:
+        expiry_dt = parse_expiry_from_symbol(symbol, candle_time)
 
     # Time to expiry in years
     try:

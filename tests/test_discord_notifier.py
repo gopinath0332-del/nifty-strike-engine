@@ -195,3 +195,40 @@ def test_auth_failure_embed_format():
         assert "Invalid password" in field_dict["Error Details"]
 
 
+def test_ce_entry_embed_format_with_expiry():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.Session.post", return_value=mock_resp) as mock_post:
+        notifier = DiscordNotifier(webhook_url="https://discord.com/api/webhooks/mock/test")
+
+        notifier.ce_entry(
+            symbol="NIFTY26NOV25250CE",
+            strike=25250,
+            spot=25344.45,
+            qty=65,
+            candle_time=datetime(2026, 11, 17, 9, 15, tzinfo=IST),
+            rsi=78.3,
+            upper_bb=25293.32,
+            r1=25337.67,
+            entry_price=263.25,
+            iv=14.8,
+            delta=0.602,
+            expiry="23-Nov-2026 (Rolled - Next Expiry)",
+        )
+
+        notifier.flush(timeout=2.0)
+        notifier.stop(timeout=1.0)
+
+        mock_post.assert_called_once()
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert embed["title"] == "🚀 Long CE Position Opened (Call Buy)"
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert field_dict["Contract"] == "NIFTY26NOV25250CE"
+        assert field_dict["Expiry"] == "23-Nov-2026 (Rolled - Next Expiry)"
+        assert "25,344.45" in field_dict["NIFTY Spot"]
+        assert "263.25" in field_dict["Entry Premium"]
+        assert "14.8%" in field_dict["Greeks (IV / Delta)"]
+
+
+
