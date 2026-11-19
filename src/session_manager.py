@@ -99,6 +99,16 @@ class SessionManager:
     ) -> None:
         self._s = settings
 
+        # Latest known NIFTY spot price (from ticks)
+        self._spot: float = 0.0
+
+        # Tick tracking for heartbeat watchdog
+        self._last_tick_time: float | None = None
+        self._last_reconnect_attempt: float = 0.0
+
+        self._ticker: KiteTicker | None = None
+        self._running: bool = False
+
         # Build Kite REST client (or use injected client)
         self._kite = (
             kite_client
@@ -169,6 +179,23 @@ class SessionManager:
             notifier=self._notifier,
         )
         logger.info("Reconciliation complete: %s", rec_result.get("status"))
+
+        # Safety Check: If position was restored on startup but current time is past EOD exit, force close immediately
+        if self._order_mgr.open_symbol is not None:
+            now_ist = datetime.now(tz=IST)
+            eod_hh, eod_mm = settings.eod_exit_hhmm
+            if now_ist.time() >= time(eod_hh, eod_mm):
+                logger.warning(
+                    "🚨 [STARTUP RECONCILIATION] Restored position %s at %s, which is >= EOD exit (%s)! Force-closing immediately.",
+                    self._order_mgr.open_symbol,
+                    now_ist.strftime("%H:%M:%S"),
+                    settings.eod_exit_time,
+                )
+                self._order_mgr.handle_exit(
+                    reason=f"EOD {settings.eod_exit_time} Startup Watchdog Exit",
+                    exit_price=self._spot or 0.0,
+                    candle_time=now_ist,
+                )
         self._candle_builder = CandleBuilder(
             interval_minutes=settings.candle_interval_minutes,
             market_hours_only=settings.enforce_market_hours,
@@ -185,15 +212,9 @@ class SessionManager:
         preseed_cnt = getattr(settings, "warmup_candles", 250)
         self.preseed_historical_candles(count=preseed_cnt)
 
-        # Latest known NIFTY spot price (from ticks)
-        self._spot: float = 0.0
-
         # Daily metrics for EOD summary
         self._candles_evaluated_today: int = 0
         self._session_date: date = datetime.now(tz=IST).date()
-
-        self._ticker: KiteTicker | None = None
-        self._running: bool = False
 
     # ------------------------------------------------------------------
     # Public entry point & Market Hours Orchestration
@@ -259,7 +280,7 @@ class SessionManager:
             preseed_cnt = getattr(self._s, "warmup_candles", 250)
             self.preseed_historical_candles(count=preseed_cnt)
         self._send_morning_briefing()
-        threading.Thread(target=self._market_close_watchdog, daemon=True).start()
+        threading.Thread(target=self._session_watchdog, name="SessionWatchdog", daemon=True).start()
         self._start_ticker()
 
     def fetch_daily_pivots(self) -> dict[str, float] | None:
@@ -467,15 +488,102 @@ class SessionManager:
                 _time.sleep(1)
 
     def _market_close_watchdog(self) -> None:
-        """Monitors time during active session and shuts down WebSocket at 15:30 IST."""
+        """Backward-compatible alias for _session_watchdog."""
+        self._session_watchdog()
+
+    def _session_watchdog(self) -> None:
+        """
+        Continuous background watchdog running during active market session:
+          1. Hard EOD Exit Guard: Ensures open positions are force-closed at eod_exit_time
+             (default 15:00 IST), completely independent of whether WebSocket ticks or candles arrive.
+          2. WebSocket Health Guard: Detects stalled feeds (>60s without ticks during market hours)
+             and triggers automatic connection reset.
+          3. Market Close Guard: Dispatches EOD summary and shuts down session at 15:30 IST.
+        """
+        logger.info(
+            "Session watchdog armed: Hard EOD exit guard at %s IST | Market close guard at 15:30 IST.",
+            self._s.eod_exit_time,
+        )
+        eod_hh, eod_mm = self._s.eod_exit_hhmm
+        eod_target = time(eod_hh, eod_mm)
+
         while self._running:
-            now_ist = datetime.now(tz=IST)
-            if now_ist.time() >= time(15, 30):
-                logger.info("Market close reached (15:30 IST). Dispatching EOD summary and stopping session...")
-                self._send_eod_summary(now_ist)
-                self.stop()
-                break
-            _time.sleep(10)
+            try:
+                now_ist = datetime.now(tz=IST)
+                now_t = now_ist.time()
+
+                # 1. Hard EOD Exit Guard (at or after 15:00 IST)
+                if now_t >= eod_target and self._order_mgr.open_symbol is not None:
+                    open_sym = self._order_mgr.open_symbol
+                    logger.warning(
+                        "🚨 [EOD WATCHDOG] Current time %s is at/past EOD cutoff %s with open position %s! "
+                        "Triggering independent hard EOD exit.",
+                        now_ist.strftime("%H:%M:%S"),
+                        self._s.eod_exit_time,
+                        open_sym,
+                    )
+                    exit_spot = self._spot
+                    if (not exit_spot or exit_spot <= 0) and self._kite:
+                        try:
+                            resp = self._kite.ltp(["NSE:NIFTY 50"])
+                            exit_spot = float(resp.get("NSE:NIFTY 50", {}).get("last_price", 0.0))
+                        except Exception as exc:
+                            logger.debug("Failed to fetch spot LTP during EOD watchdog exit: %s", exc)
+
+                    self._order_mgr.handle_exit(
+                        reason=f"EOD {self._s.eod_exit_time} Watchdog Exit",
+                        exit_price=exit_spot if exit_spot and exit_spot > 0 else 0.0,
+                        candle_time=now_ist,
+                    )
+
+                # 2. WebSocket Health Guard (Tick Heartbeat)
+                # Evaluated during active trading hours (09:15 to 15:30 IST)
+                if time(9, 15) <= now_t < time(15, 30):
+                    if self._ticker is not None and self._last_tick_time is not None:
+                        stale_sec = _time.time() - self._last_tick_time
+                        if stale_sec > 60.0:
+                            now_epoch = _time.time()
+                            if (now_epoch - self._last_reconnect_attempt) > 60.0:
+                                self._last_reconnect_attempt = now_epoch
+                                logger.warning(
+                                    "⚠️ [HEARTBEAT WATCHDOG] No ticks received for %ds (threshold 60s). Recovering stale WebSocket...",
+                                    int(stale_sec),
+                                )
+                                self._recover_stale_websocket(int(stale_sec))
+
+                # 3. Market Close Guard (15:30 IST)
+                if now_t >= time(15, 30):
+                    logger.info("Market close reached (15:30 IST). Dispatching EOD summary and stopping session...")
+                    self._send_eod_summary(now_ist)
+                    self.stop()
+                    break
+
+            except Exception as exc:
+                logger.error("Unexpected error in session watchdog loop: %s", exc)
+
+            _time.sleep(5)
+
+    def _recover_stale_websocket(self, stale_seconds: int) -> None:
+        """Forces recovery on a silent/stalled WebSocket connection."""
+        try:
+            self._notifier.info(
+                f"⚠️ **WebSocket Feed Stalled**: No ticks received for {stale_seconds}s.\n"
+                "• Triggering automated connection reset to restore live feed."
+            )
+        except Exception as exc:
+            logger.debug("Failed to deliver stalled WebSocket alert to Discord: %s", exc)
+
+        try:
+            if self._ticker:
+                ws_obj = getattr(self._ticker, "ws", None)
+                if ws_obj and hasattr(ws_obj, "dropConnection"):
+                    logger.info("Dropping stalled WebSocket connection via dropConnection(abort=True)...")
+                    ws_obj.dropConnection(abort=True)
+                elif hasattr(self._ticker, "resubscribe"):
+                    logger.info("Triggering ticker.resubscribe()...")
+                    self._ticker.resubscribe()
+        except Exception as exc:
+            logger.error("Error while resetting stalled WebSocket: %s", exc)
 
     def _send_eod_summary(self, now_ist: datetime) -> None:
         """Dispatches the 15:30 IST EOD Session Summary embed to Discord."""
@@ -575,6 +683,7 @@ class SessionManager:
         self._ticker.set_mode(self._ticker.MODE_FULL, [NIFTY_TOKEN])
 
     def _on_ticks(self, ws, ticks: list[dict]) -> None:  # noqa: ANN001
+        self._last_tick_time = _time.time()
         for tick in ticks:
             if tick.get("instrument_token") != NIFTY_TOKEN:
                 continue

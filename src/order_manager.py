@@ -185,6 +185,8 @@ class OrderManager:
                     opt_exit_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", exit_price))
             except Exception:
                 pass
+            if (opt_exit_price is None or opt_exit_price <= 0) and self._entry_price:
+                opt_exit_price = self._entry_price
 
         # Notify Discord
         self._notify.exit_signal(

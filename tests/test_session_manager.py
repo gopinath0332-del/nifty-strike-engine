@@ -230,3 +230,112 @@ def test_preseed_enables_immediate_pivot_and_indicator_readiness():
     assert round(latest_bar["pivot"], 2) == round(expected_p, 2)
 
 
+def test_session_watchdog_eod_exit_triggers(monkeypatch):
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+    sm._running = True
+    sm._order_mgr._open_symbol = "NIFTY26NOV25200CE"
+    sm._order_mgr._entry_price = 250.0
+    sm._spot = 25300.0
+
+    fake_now = datetime(2026, 11, 19, 15, 0, 5, tzinfo=IST)
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now
+
+    monkeypatch.setattr("src.session_manager.datetime", MockDatetime)
+    sm._order_mgr.handle_exit = MagicMock()
+
+    def stop_after_one(*args, **kwargs):
+        sm._running = False
+    monkeypatch.setattr("src.session_manager._time.sleep", stop_after_one)
+
+    sm._session_watchdog()
+
+    sm._order_mgr.handle_exit.assert_called_once()
+    call_kwargs = sm._order_mgr.handle_exit.call_args[1]
+    assert "EOD 15:00 Watchdog Exit" in call_kwargs["reason"]
+    assert call_kwargs["candle_time"] == fake_now
+
+
+def test_session_watchdog_stale_websocket_recovery(monkeypatch):
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+    sm._running = True
+    mock_ticker = MagicMock()
+    mock_ws = MagicMock()
+    mock_ticker.ws = mock_ws
+    sm._ticker = mock_ticker
+
+    fake_now = datetime(2026, 11, 19, 11, 30, 0, tzinfo=IST)
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now
+
+    monkeypatch.setattr("src.session_manager.datetime", MockDatetime)
+
+    import time as _t
+    sm._last_tick_time = _t.time() - 75.0
+    sm._last_reconnect_attempt = 0.0
+
+    def stop_after_one(*args, **kwargs):
+        sm._running = False
+    monkeypatch.setattr("src.session_manager._time.sleep", stop_after_one)
+
+    sm._session_watchdog()
+
+    mock_ws.dropConnection.assert_called_once_with(abort=True)
+    mock_notifier.info.assert_called()
+
+
+def test_startup_reconciliation_past_eod_auto_closes(monkeypatch):
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+
+    def mock_rec(kite, order_manager, signal_engine, live_mode, notifier):
+        order_manager.restore_state(symbol="NIFTY26NOV25200CE", entry_price=260.0)
+        signal_engine.restore_state(position="CE", trade_today=1)
+        return {"status": "recovered_simulation_position"}
+    mock_state.reconcile.side_effect = mock_rec
+
+    fake_now = datetime(2026, 11, 19, 15, 5, 0, tzinfo=IST)
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now
+
+    monkeypatch.setattr("src.session_manager.datetime", MockDatetime)
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+
+    assert sm._order_mgr.open_symbol is None
+    assert sm._engine.position is None
+
+
+
