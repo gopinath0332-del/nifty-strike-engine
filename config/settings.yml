@@ -22,7 +22,7 @@ indicators:
   supertrend:
     atr_period: 10
     factor: 3.0
-    buffer_points: 0.0              # Standard TradingView default (no offset)
+    buffer_points: 0.0 # Standard TradingView default (no offset)
   rsi:
     length: 14
   bollinger_bands:
@@ -40,12 +40,12 @@ timing:
 
 # Position Sizing & Scaling Recommendations
 sizing:
-  mode: "DYNAMIC"                # FIXED (strictly lot_size) or DYNAMIC (suggests scale-up / step-down)
-  use_broker_balance: true       # In LIVE mode, fetch real-time liquid cash from Zerodha
-  initial_capital: 150000        # Starting capital in INR (used in backtesting & simulation fallback)
-  base_lots: 1                   # Starting lot count (1 lot = 65 units)
-  max_lots: 5                    # Maximum allowable lot count
-  profit_step_per_lot: 40000     # Net profit in INR needed per additional lot
-  min_trades_per_scale: 40       # Minimum trade count on current tier before scaling up
-  step_down_dd_pct: 12.0         # Drawdown % from peak equity to trigger step-down
+  mode: "FIXED" # FIXED (strictly lot_size) or DYNAMIC (suggests scale-up / step-down)
+  use_broker_balance: true # In LIVE mode, fetch real-time liquid cash from Zerodha
+  initial_capital: 150000 # Starting capital in INR (used in backtesting & simulation fallback)
+  base_lots: 1 # Starting lot count (1 lot = 65 units)
+  max_lots: 5 # Maximum allowable lot count
+  profit_step_per_lot: 40000 # Net profit in INR needed per additional lot
+  min_trades_per_scale: 40 # Minimum trade count on current tier before scaling up
+  step_down_dd_pct: 12.0 # Drawdown % from peak equity to trigger step-down
 
