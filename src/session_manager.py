@@ -193,8 +193,9 @@ class SessionManager:
                 )
                 self._order_mgr.handle_exit(
                     reason=f"EOD {settings.eod_exit_time} Startup Watchdog Exit",
-                    exit_price=self._spot or 0.0,
+                    exit_price=0.0,
                     candle_time=now_ist,
+                    spot=self._spot or 0.0,
                 )
         self._candle_builder = CandleBuilder(
             interval_minutes=settings.candle_interval_minutes,
@@ -532,8 +533,9 @@ class SessionManager:
 
                     self._order_mgr.handle_exit(
                         reason=f"EOD {self._s.eod_exit_time} Watchdog Exit",
-                        exit_price=exit_spot if exit_spot and exit_spot > 0 else 0.0,
+                        exit_price=0.0,
                         candle_time=now_ist,
+                        spot=exit_spot if exit_spot and exit_spot > 0 else 0.0,
                     )
 
                 # 2. WebSocket Health Guard (Tick Heartbeat)
@@ -821,8 +823,9 @@ class SessionManager:
             if result.exit_ce or result.exit_pe:
                 self._order_mgr.handle_exit(
                     reason=result.exit_reason,
-                    exit_price=self._spot,
+                    exit_price=0.0,
                     candle_time=candle.timestamp,
+                    spot=self._spot,
                 )
 
             elif result.ce_entry:

@@ -147,16 +147,29 @@ class OrderManager:
         symbol, ltp = self._strike_selector.select_by_premium(spot, "PE")
         self._buy(symbol, "PE", spot, candle_time, indicators, estimated_ltp=ltp)
 
-    def handle_exit(self, reason: str, exit_price: float, candle_time: datetime) -> None:
+    def handle_exit(
+        self,
+        reason: str,
+        exit_price: float = 0.0,
+        candle_time: datetime | None = None,
+        spot: float | None = None,
+    ) -> None:
         """Close the currently open option position."""
         if self._open_symbol is None:
             logger.warning("handle_exit called but no open position tracked.")
             return
 
         symbol = self._open_symbol
-        logger.info("Exiting position %s | reason=%s | price=%.2f", symbol, reason, exit_price)
+        now_ts = candle_time or datetime.now(tz=IST)
 
-        opt_exit_price = exit_price
+        # Safety: If spot price was accidentally passed as exit_price (> 5000), treat as spot
+        if exit_price and exit_price > 5000.0:
+            if not spot or spot <= 0:
+                spot = exit_price
+            exit_price = 0.0
+
+        opt_exit_price: float | None = None
+
         if self._live:
             try:
                 order_id = self._kite.place_order(
@@ -179,14 +192,37 @@ class OrderManager:
                 return
         else:
             logger.info("[SIMULATION] Exit order skipped (LIVE_ORDER_PLACEMENT=false)")
-            try:
-                ltp_resp = self._kite.ltp(f"NFO:{symbol}")
-                if f"NFO:{symbol}" in ltp_resp:
-                    opt_exit_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", exit_price))
-            except Exception:
-                pass
-            if (opt_exit_price is None or opt_exit_price <= 0) and self._entry_price:
-                opt_exit_price = self._entry_price
+            # Try fetching real option LTP from Kite ticker/quote
+            if self._kite:
+                try:
+                    ltp_resp = self._kite.ltp(f"NFO:{symbol}")
+                    if f"NFO:{symbol}" in ltp_resp:
+                        last_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", 0.0))
+                        if last_price > 0:
+                            opt_exit_price = last_price
+                except Exception:
+                    pass
+
+        # If not determined via fill or Kite LTP, use provided exit_price if valid option price
+        if opt_exit_price is None and exit_price and 0 < exit_price <= 5000.0:
+            opt_exit_price = exit_price
+
+        # Fallback to entry price if market closed or LTP unavailable (simulates flat exit instead of erroneous 0.0 or spot)
+        if opt_exit_price is None or opt_exit_price <= 0:
+            opt_exit_price = self._entry_price if (self._entry_price and self._entry_price > 0) else 0.0
+
+        logger.info(
+            "Exiting position %s | reason=%s | opt_price=%.2f | spot=%s",
+            symbol,
+            reason,
+            opt_exit_price,
+            f"{spot:.2f}" if spot else "N/A",
+        )
+
+        # Compute PnL
+        pnl = None
+        if self._entry_price is not None:
+            pnl = round((opt_exit_price - self._entry_price) * self._qty, 2)
 
         # Notify Discord
         self._notify.exit_signal(
@@ -194,18 +230,15 @@ class OrderManager:
             reason=reason,
             entry_price=self._entry_price,
             exit_price=opt_exit_price,
-            candle_time=candle_time,
+            candle_time=now_ts,
             qty=self._qty,
         )
 
         # Update Firestore
         if self._firestore and self._current_trade_id:
-            pnl = None
-            if self._entry_price is not None:
-                pnl = round((opt_exit_price - self._entry_price) * self._qty, 2)
             self._firestore.record_exit(
                 trade_id=self._current_trade_id,
-                exit_time=candle_time,
+                exit_time=now_ts,
                 exit_price=opt_exit_price,
                 exit_reason=reason,
                 pnl=pnl,
@@ -220,16 +253,17 @@ class OrderManager:
 
         # Record to local ledger and evaluate dynamic sizing criteria
         try:
-            trade_id_val = self._current_trade_id or f"TRADE_{candle_time.strftime('%Y%m%d_%H%M%S')}"
+            trade_id_val = self._current_trade_id or f"TRADE_{now_ts.strftime('%Y%m%d_%H%M%S')}"
             self._record_and_evaluate_sizing(
                 trade_id=trade_id_val,
                 symbol=symbol,
-                entry_time=self._entry_time or candle_time,
-                exit_time=candle_time,
+                entry_time=self._entry_time or now_ts,
+                exit_time=now_ts,
                 entry_price=self._entry_price,
                 exit_price=opt_exit_price,
                 exit_reason=reason,
-                pnl=pnl if self._entry_price is not None else 0.0,
+                pnl=pnl if pnl is not None else 0.0,
+                spot_price=spot or 0.0,
             )
         except Exception as exc:
             logger.error("Failed during position sizing evaluation: %s", exc)
@@ -251,8 +285,11 @@ class OrderManager:
         exit_price: float,
         exit_reason: str,
         pnl: float,
+        spot_price: float = 0.0,
     ) -> None:
         """Appends closed trade to local ledger and runs position sizing evaluation."""
+        match = re.search(r"(\d{4,5})(?:CE|PE)$", symbol)
+        strike_val = int(match.group(1)) if match else 0
         trade_rec = {
             "trade_id": trade_id,
             "date": exit_time.astimezone(IST).date().isoformat() if hasattr(exit_time, "astimezone") else str(exit_time)[:10],
@@ -260,7 +297,8 @@ class OrderManager:
             "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
             "symbol": symbol,
             "option_type": "CE" if "CE" in symbol else "PE",
-            "strike": int(symbol[-8:-2]) if len(symbol) >= 8 and symbol[-8:-2].isdigit() else 0,
+            "strike": strike_val,
+            "spot_price": spot_price,
             "lot_size": self._qty,
             "entry_price": entry_price or 0.0,
             "exit_price": exit_price,

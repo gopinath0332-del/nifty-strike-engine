@@ -177,3 +177,101 @@ def test_simulation_mode_does_not_abort_on_low_margin():
     assert engine.position == "CE"
     mock_notifier.margin_insufficient.assert_not_called()
 
+
+def test_handle_exit_rejects_spot_as_option_exit_price():
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    engine = SignalEngine()
+    engine.on_entry_filled("CE")
+
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=mock_notifier,
+        lot_size=65,
+        live_order_placement=False,
+    )
+    order_mgr._open_symbol = "NIFTY26NOV25500CE"
+    order_mgr._entry_price = 246.60
+
+    # Kite LTP returns option last price 260.0
+    mock_kite.ltp.return_value = {
+        "NFO:NIFTY26NOV25500CE": {"last_price": 260.0}
+    }
+
+    # Pass 25765.90 as exit_price (accidentally spot index price)
+    order_mgr.handle_exit(
+        reason="EOD 15:00 Watchdog Exit",
+        exit_price=25765.90,
+        candle_time=datetime(2026, 11, 20, 15, 0, tzinfo=IST),
+    )
+
+    # Should have queried Kite for the NFO option LTP
+    mock_kite.ltp.assert_called_with("NFO:NIFTY26NOV25500CE")
+    # Notifier should receive the real option price (260.0), NOT 25765.90
+    call_kwargs = mock_notifier.exit_signal.call_args[1]
+    assert call_kwargs["exit_price"] == 260.0
+    assert call_kwargs["entry_price"] == 246.60
+    assert order_mgr.open_symbol is None
+
+
+def test_record_sizing_weekly_and_monthly_strike_parsing():
+    mock_kite = MagicMock()
+    mock_sizer = MagicMock()
+    mock_decision = MagicMock()
+    mock_decision.action = "HOLD"
+    mock_decision.total_trades = 1
+    mock_decision.current_lots = 1
+    mock_decision.recommended_lots = 1
+    mock_decision.net_pnl = 0.0
+    mock_decision.drawdown_pct = 0.0
+    mock_decision.reason = "testing"
+    mock_decision.headline = "HOLD"
+    mock_sizer.evaluate.return_value = mock_decision
+
+    engine = SignalEngine()
+
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=MagicMock(),
+        lot_size=65,
+        position_sizer=mock_sizer,
+    )
+
+    now = datetime(2026, 11, 20, 15, 0, tzinfo=IST)
+    # 1. Weekly symbol
+    order_mgr._record_and_evaluate_sizing(
+        trade_id="T1",
+        symbol="NIFTY26N1725050CE",
+        entry_time=now,
+        exit_time=now,
+        entry_price=245.0,
+        exit_price=260.0,
+        exit_reason="ST Flip Exit",
+        pnl=975.0,
+        spot_price=25200.0,
+    )
+    rec1 = mock_sizer.save_live_trade.call_args_list[0][0][0]
+    assert rec1["strike"] == 25050
+    assert rec1["spot_price"] == 25200.0
+    assert rec1["exit_price"] == 260.0
+
+    # 2. Monthly symbol
+    order_mgr._record_and_evaluate_sizing(
+        trade_id="T2",
+        symbol="NIFTY26NOV25250CE",
+        entry_time=now,
+        exit_time=now,
+        entry_price=250.0,
+        exit_price=270.0,
+        exit_reason="ST Flip Exit",
+        pnl=1300.0,
+        spot_price=25350.0,
+    )
+    rec2 = mock_sizer.save_live_trade.call_args_list[1][0][0]
+    assert rec2["strike"] == 25250
+    assert rec2["spot_price"] == 25350.0
+    assert rec2["exit_price"] == 270.0
+
+
