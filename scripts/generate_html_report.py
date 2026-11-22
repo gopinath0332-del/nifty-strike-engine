@@ -40,13 +40,19 @@ CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_trade
 HTML_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest_report_2026.html")
 
 
-def generate_report(csv_path: str | None = None, html_path: str | None = None, timeframe_label: str | None = None):
+def generate_report(
+    csv_path: str | None = None,
+    html_path: str | None = None,
+    timeframe_label: str | None = None,
+    lot_size_override: int | None = None,
+    symbol_label: str = "NIFTY",
+):
     try:
         cfg = get_settings()
-        lot_size = cfg.lot_size
+        lot_size = lot_size_override or cfg.lot_size
         default_interval = cfg.candle_interval_minutes
     except Exception:
-        lot_size = 65
+        lot_size = lot_size_override or 65
         default_interval = 5
 
     tf_label = timeframe_label or f"{default_interval}-min"
@@ -302,7 +308,7 @@ def generate_report(csv_path: str | None = None, html_path: str | None = None, t
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NIFTY Options Buying Strategy v9 - Advanced Backtest Report</title>
+    <title>{symbol_label} Options Buying Strategy v9 - Advanced Backtest Report</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {{
@@ -502,10 +508,10 @@ def generate_report(csv_path: str | None = None, html_path: str | None = None, t
 <div class="container">
     <header>
         <div>
-            <h1>📊 NIFTY Options Buying Strategy v9 ({tf_label})</h1>
+            <h1>📊 {symbol_label} Options Buying Strategy v9 ({tf_label})</h1>
             <div class="subtitle">Backtest Ledger & Performance Intelligence • 2026-01-01 to 2026-11-06 ({tf_label} timeframe, {lot_size} qty)</div>
         </div>
-        <div class="header-tag">Strategy: NIFTY_V9</div>
+        <div class="header-tag">Strategy: {symbol_label}_V9</div>
     </header>
 
     <!-- SECTION 1: Top-Level Quant & Risk KPI Cards -->
