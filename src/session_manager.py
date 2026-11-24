@@ -583,6 +583,12 @@ class SessionManager:
                         spot=exit_spot if exit_spot and exit_spot > 0 else 0.0,
                     )
 
+                # Holiday & Market Hours Guard: Exit watchdog if market is closed or today is a holiday
+                if not is_market_hours(now_ist, self._custom_holidays):
+                    logger.info("Session watchdog: Market is closed or today is a holiday. Shutting down active session...")
+                    self.stop()
+                    break
+
                 # 2. WebSocket Health Guard (Tick Heartbeat)
                 # Evaluated during active trading hours (09:15 to 15:30 IST)
                 if time(9, 15) <= now_t < time(15, 30):
@@ -768,7 +774,11 @@ class SessionManager:
 
     def _on_error(self, ws, code, reason) -> None:  # noqa: ANN001
         logger.error("WebSocket error: code=%s reason=%s", code, reason)
-        self._notifier.error(f"WebSocket error (code={code}): {reason}")
+        now_ist = datetime.now(tz=IST)
+        if is_market_hours(now_ist, self._custom_holidays):
+            self._notifier.error(f"WebSocket error (code={code}): {reason}")
+        else:
+            logger.debug("Suppressed Discord error alert for code=%s outside active market hours.", code)
 
     def _on_reconnect(self, ws, attempts_count) -> None:  # noqa: ANN001
         logger.warning("WebSocket reconnecting (attempt %d)…", attempts_count)
