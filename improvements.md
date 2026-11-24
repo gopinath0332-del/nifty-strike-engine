@@ -28,10 +28,18 @@ Based on a comprehensive review of the entire codebase ([`src/`](file:///d:/Work
 
 ### 2. High Priority: Market Infrastructure & Calendar
 
-#### A. NSE Official Trading Holidays Calendar
+#### A. NSE Official Trading Holidays Calendar ✅ [COMPLETED]
 
-- **Current Issue**: The bot bypasses weekends (Saturday/Sunday), but Indian exchanges also close on ~15 national and festival holidays per year (e.g., Diwali, Republic Day, Christmas, Eid, Mahashivratri). On those days, the morning timer would still attempt to trade on a closed exchange.
-- **Improvement**: Add an NSE holiday list (either hardcoded in `config/settings.yml` for the current calendar year or dynamically fetched). If today is an exchange holiday, enter standby mode just like on weekends.
+- **Status**: Implemented via [`src/market_calendar.py`](file:///d:/Workspace/nifty-strike-engine/src/market_calendar.py).
+- **Features**:
+  - Official NSE trading holiday calendars for 2024, 2025, 2026, and 2027 built-in.
+  - Supports custom holiday overrides via `timing.custom_holidays` in `config/settings.yml`.
+  - Dispatches rich Discord alert (`🏖️ Nifty Strike Engine — Market Holiday Alert`) with holiday name, date, and next session details.
+  - Puts engine into low-power standby mode, bypassing tick WebSocket connection and trade signals.
+  - Standby loop detects date roll-overs and alerts on holidays automatically.
+  - EOD session summary alerts user if tomorrow is a market holiday.
+  - Auto-login script (`scripts/auto_login.py`) skips headless browser authentication on market holidays unless `--force` is specified.
+  - CLI check tool [`scripts/check_market_holiday.py`](file:///d:/Workspace/nifty-strike-engine/scripts/check_market_holiday.py) provided to check dates, list yearly schedules, or dispatch test alerts.
 
 #### B. Asynchronous Discord Notifications
 

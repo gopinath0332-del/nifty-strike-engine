@@ -45,6 +45,7 @@ _COLOR = {
     "loss":      0xF43F5E,
     "error":     0x8B0000,
     "info":      0x888888,
+    "holiday":   0xF59E0B,
 }
 
 
@@ -309,6 +310,33 @@ class DiscordNotifier:
         self._send(
             color=_COLOR["eod_exit"],
             title="📊 Nifty Strike Engine — EOD Session Summary",
+            fields=fields,
+        )
+
+    def market_holiday(
+        self,
+        holiday_name: str,
+        date_str: str,
+        day_name: str,
+        next_session: str,
+    ) -> None:
+        """Sends a market holiday alert embed to Discord."""
+        fields = [
+            ("Date", f"**{date_str} ({day_name})**", True),
+            ("Holiday / Occasion", f"**{holiday_name}**", True),
+            ("Market Status", "🛑 **Exchanges Closed (NSE / BSE)**", False),
+            (
+                "Engine Action",
+                "• WebSocket tick stream connection bypassed.\n"
+                "• Automated order placement suspended.\n"
+                "• Engine in low-power standby mode.",
+                False,
+            ),
+            ("Next Trading Session", f"🗓️ **{next_session} at 09:14 IST**", False),
+        ]
+        self._send(
+            color=_COLOR["holiday"],
+            title="🏖️ Nifty Strike Engine — Market Holiday Standby",
             fields=fields,
         )
 

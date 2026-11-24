@@ -49,6 +49,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.discord_notifier import DiscordNotifier
 from src.kite_auth import generate_access_token, save_access_token_to_env
+from src.market_calendar import (
+    get_holiday_name,
+    get_next_trading_day,
+    is_market_holiday,
+    is_weekend,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="Run browser in headless mode (default: True)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force auto-login even if today is a weekend or market holiday",
     )
     return parser.parse_args()
 
@@ -248,6 +259,33 @@ def main() -> None:
             notifier.auth_failure(user_id=user_id or "Unknown", error=msg)
             notifier.stop(timeout=5.0)
         sys.exit(1)
+
+    now_ist = datetime.now(tz=IST)
+    if not args.force and (is_weekend(now_ist) or is_market_holiday(now_ist)):
+        if is_market_holiday(now_ist):
+            holiday_name = get_holiday_name(now_ist) or "NSE Trading Holiday"
+            day_name = now_ist.strftime("%A")
+            date_str = now_ist.strftime("%Y-%m-%d")
+            next_trade_date = get_next_trading_day(now_ist)
+            next_session_str = next_trade_date.strftime("%A, %d %b %Y")
+            logger.info(
+                "🏖️ Today is %s (%s) — %s. Indian markets (NSE) are closed. Skipping morning auto-login.",
+                date_str,
+                day_name,
+                holiday_name,
+            )
+            if notifier:
+                notifier.market_holiday(
+                    holiday_name=holiday_name,
+                    date_str=date_str,
+                    day_name=day_name,
+                    next_session=next_session_str,
+                )
+                notifier.stop(timeout=5.0)
+        else:
+            day_name = now_ist.strftime("%A")
+            logger.info("⏸️ Today is %s (Weekend). Indian markets are closed. Skipping morning auto-login.", day_name)
+        sys.exit(0)
 
     try:
         logger.info("Starting Zero-Touch automated morning login via Headless Chromium...")

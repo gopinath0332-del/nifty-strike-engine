@@ -48,6 +48,14 @@ from src.discord_notifier import DiscordNotifier
 from src.firestore_service import FirestoreService
 from src.indicators import apply_all
 from src.kite_auth import build_authenticated_kite
+from src.market_calendar import (
+    get_holiday_name,
+    get_next_trading_day,
+    is_market_holiday,
+    is_market_hours,
+    is_trading_day,
+    is_weekend,
+)
 from src.order_manager import OrderManager
 from src.position_sizer import PositionSizer
 from src.signal_engine import SignalEngine
@@ -60,23 +68,6 @@ NIFTY_TOKEN = 256265           # Kite instrument token for NIFTY 50 index
 # Minimum candles in the rolling buffer before signals are evaluated
 # (needs at least BB_LENGTH=20 candles for valid indicators)
 MIN_CANDLES = 25
-
-
-def is_weekend(dt: datetime) -> bool:
-    """Returns True if dt (in IST) falls on Saturday (5) or Sunday (6)."""
-    return dt.weekday() >= 5
-
-
-def is_market_hours(dt: datetime) -> bool:
-    """
-    Returns True if dt (in IST) is within active NSE trading hours.
-    NSE regular market hours: 09:15 to 15:30 IST on Monday-Friday.
-    We allow tick stream connection starting at 09:14 IST.
-    """
-    if is_weekend(dt):
-        return False
-    t = dt.time()
-    return time(9, 14) <= t <= time(15, 30)
 
 
 class SessionManager:
@@ -98,6 +89,7 @@ class SessionManager:
         state_manager: StateManager | None = None,
     ) -> None:
         self._s = settings
+        self._custom_holidays = getattr(settings, "custom_holidays", None)
 
         # Latest known NIFTY spot price (from ticks)
         self._spot: float = 0.0
@@ -237,6 +229,8 @@ class SessionManager:
         # 1. Weekend Check (Saturday & Sunday)
         if is_weekend(now_ist):
             day_name = now_ist.strftime("%A")
+            next_trade_date = get_next_trading_day(now_ist, self._custom_holidays)
+            next_session_str = next_trade_date.strftime("%A (%d %b)")
             logger.info(
                 "⏸️ Today is %s (Weekend). NSE market is closed. WebSocket connection bypassed.",
                 day_name,
@@ -245,13 +239,35 @@ class SessionManager:
                 f"⏸️ **Nifty Strike Engine in Weekend Standby**\n"
                 f"• Today is **{day_name}** — Indian markets (NSE) are closed.\n"
                 f"• WebSocket connection bypassed.\n"
-                f"• Engine is sleeping in standby mode, awaiting Monday 09:14 IST open."
+                f"• Engine is sleeping in standby mode, awaiting {next_session_str} 09:14 IST open."
             )
             self._standby_loop()
             return
 
-        # 2. Weekday Outside Market Hours Check
-        if not is_market_hours(now_ist):
+        # 2. Market Holiday Check (NSE Official & Custom Holidays)
+        if is_market_holiday(now_ist, self._custom_holidays):
+            holiday_name = get_holiday_name(now_ist, self._custom_holidays) or "NSE Trading Holiday"
+            day_name = now_ist.strftime("%A")
+            date_str = now_ist.strftime("%Y-%m-%d")
+            next_trade_date = get_next_trading_day(now_ist, self._custom_holidays)
+            next_session_str = next_trade_date.strftime("%A, %d %b %Y")
+            logger.info(
+                "🏖️ Today is %s (%s) — %s. NSE market is closed. WebSocket connection bypassed.",
+                date_str,
+                day_name,
+                holiday_name,
+            )
+            self._notifier.market_holiday(
+                holiday_name=holiday_name,
+                date_str=date_str,
+                day_name=day_name,
+                next_session=next_session_str,
+            )
+            self._standby_loop()
+            return
+
+        # 3. Weekday Outside Market Hours Check
+        if not is_market_hours(now_ist, self._custom_holidays):
             t = now_ist.time()
             if t < time(9, 14):
                 logger.info(
@@ -475,9 +491,38 @@ class SessionManager:
     def _standby_loop(self) -> None:
         """Standby loop when market is closed, checking every 60s until market opens."""
         logger.info("Entering low-power standby loop. Checking market status every 60s...")
+        last_notified_holiday_date: date | None = (
+            datetime.now(tz=IST).date()
+            if is_market_holiday(datetime.now(tz=IST), self._custom_holidays)
+            else None
+        )
         while self._running:
             now_ist = datetime.now(tz=IST)
-            if is_market_hours(now_ist):
+            today_date = now_ist.date()
+
+            # Date rollover holiday check (alerts once per holiday date in continuous standby)
+            if is_market_holiday(now_ist, self._custom_holidays):
+                if last_notified_holiday_date != today_date:
+                    last_notified_holiday_date = today_date
+                    holiday_name = get_holiday_name(now_ist, self._custom_holidays) or "NSE Trading Holiday"
+                    day_name = now_ist.strftime("%A")
+                    date_str = now_ist.strftime("%Y-%m-%d")
+                    next_trade_date = get_next_trading_day(now_ist, self._custom_holidays)
+                    next_session_str = next_trade_date.strftime("%A, %d %b %Y")
+                    logger.info(
+                        "🏖️ [Standby Loop] Today is %s (%s) — %s. NSE market is closed.",
+                        date_str,
+                        day_name,
+                        holiday_name,
+                    )
+                    self._notifier.market_holiday(
+                        holiday_name=holiday_name,
+                        date_str=date_str,
+                        day_name=day_name,
+                        next_session=next_session_str,
+                    )
+
+            if is_market_hours(now_ist, self._custom_holidays):
                 logger.info("Market session is now active (%s IST)! Launching WebSocket...", now_ist.strftime("%H:%M:%S"))
                 self._start_active_session()
                 break
@@ -625,8 +670,16 @@ class SessionManager:
         else:
             trades_str = f"{trades_count} (Completed & Managed)"
 
-        # 3. Next session label (Friday -> Monday, Mon-Thu -> tomorrow)
-        next_session = "Monday 08:50 AM IST" if now_ist.weekday() == 4 else "tomorrow 08:50 AM IST"
+        # 3. Next session label with holiday awareness
+        next_trade_date = get_next_trading_day(now_ist, self._custom_holidays)
+        tomorrow = now_ist.date() + timedelta(days=1)
+        if is_market_holiday(tomorrow, self._custom_holidays):
+            hol_name = get_holiday_name(tomorrow, self._custom_holidays) or "Holiday"
+            next_session = f"{next_trade_date.strftime('%A, %d %b')} (Tomorrow: {hol_name} — Closed 🏖️)"
+        elif is_weekend(tomorrow):
+            next_session = f"{next_trade_date.strftime('%A, %d %b')} 08:50 AM IST (Weekend Standby ⏸️)"
+        else:
+            next_session = f"tomorrow ({next_trade_date.strftime('%A')}) 08:50 AM IST"
 
         # 4. Dispatch embed
         try:

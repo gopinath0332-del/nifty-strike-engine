@@ -63,3 +63,29 @@ def test_auto_login_step1_failure_raises() -> None:
                 totp_secret=pyotp.random_base32(),
                 headless=True,
             )
+
+
+def test_auto_login_skips_on_holiday(monkeypatch) -> None:
+    from datetime import datetime, timezone, timedelta
+    from scripts.auto_login import main
+
+    IST = timezone(timedelta(hours=5, minutes=30))
+    holiday_now = datetime(2026, 11, 24, 8, 50, tzinfo=IST)
+
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return holiday_now
+
+    monkeypatch.setattr("scripts.auto_login.datetime", MockDatetime)
+    monkeypatch.setattr("sys.argv", ["auto_login.py"])
+
+    # Mock perform_automated_login so if it gets called, it would fail
+    mock_perform = MagicMock()
+    monkeypatch.setattr("scripts.auto_login.perform_automated_login", mock_perform)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 0
+    mock_perform.assert_not_called()

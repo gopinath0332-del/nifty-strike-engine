@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 import yaml
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -104,6 +105,9 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
         parsed["skip_first_candle"] = bool(timing["skip_first_candle"])
     if "warmup_candles" in timing:
         parsed["warmup_candles"] = int(timing["warmup_candles"])
+    custom_holidays = timing.get("custom_holidays") or doc.get("custom_holidays")
+    if custom_holidays is not None:
+        parsed["custom_holidays"] = custom_holidays
 
     # Sizing settings
     sz = doc.get("sizing", {})
@@ -176,6 +180,7 @@ class Settings(BaseSettings):
     enforce_market_hours: bool = True
     skip_first_candle: bool = False
     warmup_candles: int = 250
+    custom_holidays: list[dict[str, Any]] | dict[str, str] | None = None
 
     # Sizing settings
     sizing_mode: str = "DYNAMIC"

@@ -43,3 +43,46 @@ def test_settings_load_with_mock_env(monkeypatch) -> None:
     assert s.entry_cutoff_hhmm == (14, 45)
     assert s.eod_exit_hhmm == (15, 0)
 
+
+def test_settings_custom_holidays_parsing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KITE_API_KEY", "real_key_123")
+    monkeypatch.setenv("KITE_API_SECRET", "real_secret_456")
+    monkeypatch.setenv("KITE_ACCESS_TOKEN", "real_token_789")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/test")
+
+    custom_yaml = tmp_path / "test_settings.yml"
+    custom_yaml.write_text("""
+trade:
+  lot_size: 65
+  max_trades_per_day: 1
+strategy:
+  name: "NIFTY_OPTIONS_BUY_V9"
+  firestore_credentials_path: "config/serviceAccountKey.json"
+  firestore_collection: "nifty"
+logging:
+  level: "INFO"
+indicators:
+  supertrend:
+    atr_period: 10
+    factor: 3.0
+    buffer_points: 0.0
+  rsi:
+    length: 14
+  bollinger_bands:
+    length: 20
+    multiplier: 2.0
+timing:
+  candle_interval_minutes: 5
+  entry_cutoff_time: "14:45"
+  eod_exit_time: "15:00"
+  custom_holidays:
+    - date: "2026-11-24"
+      name: "Guru Nanak Jayanti"
+""")
+
+    s = Settings.load(str(custom_yaml))
+    assert s.custom_holidays is not None
+    assert len(s.custom_holidays) == 1
+    assert s.custom_holidays[0]["date"] == "2026-11-24"
+    assert s.custom_holidays[0]["name"] == "Guru Nanak Jayanti"
+
