@@ -108,6 +108,7 @@ class StateManager:
         entry_time: datetime,
         qty: int,
         spot_price: float,
+        product: str = "MIS",
     ) -> None:
         """
         Creates active position json file only when a position is placed.
@@ -122,6 +123,7 @@ class StateManager:
             "entry_time": entry_time.isoformat(),
             "qty": int(qty),
             "spot_price": float(spot_price),
+            "product": str(product or "MIS").upper(),
         }
         self.save_state(state)
 
@@ -189,6 +191,7 @@ class StateManager:
             entry_price = float(active_pos.get("entry_price", 0.0))
             trade_id = str(active_pos.get("trade_id", f"REC_{today_str}_{opt_type}"))
             qty = int(active_pos.get("qty", 65))
+            product = str(active_pos.get("product") or "MIS").upper()
 
             if live_mode and kite:
                 broker_pos = self._find_broker_open_position(kite)
@@ -196,14 +199,21 @@ class StateManager:
                     # Verified open on Kite! Re-adopt it.
                     broker_sym = broker_pos["tradingsymbol"]
                     broker_qty = int(broker_pos["quantity"])
+                    broker_product = str(broker_pos.get("product") or product).upper()
                     broker_fill = float(broker_pos.get("average_price") or broker_pos.get("buy_price") or entry_price)
 
-                    order_manager.restore_state(symbol=broker_sym, entry_price=broker_fill, trade_id=trade_id, qty=broker_qty)
+                    order_manager.restore_state(
+                        symbol=broker_sym,
+                        entry_price=broker_fill,
+                        trade_id=trade_id,
+                        qty=broker_qty,
+                        product=broker_product,
+                    )
                     signal_engine.restore_state(position=opt_type, trade_today=1, last_reset_date=today)
 
                     recovery_msg = (
                         f"🔄 **Crash Recovery: Position Re-Adopted**\n"
-                        f"• Contract: `{broker_sym}` ({opt_type})\n"
+                        f"• Contract: `{broker_sym}` ({opt_type}, {broker_product})\n"
                         f"• Quantity: {broker_qty} units\n"
                         f"• Entry Price: ₹{broker_fill:.2f}\n"
                         f"• Status: Re-linked to active trailing stop & 15:00 EOD exit."
@@ -232,7 +242,13 @@ class StateManager:
 
             else:
                 # Simulation Mode
-                order_manager.restore_state(symbol=symbol, entry_price=entry_price, trade_id=trade_id, qty=qty)
+                order_manager.restore_state(
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    trade_id=trade_id,
+                    qty=qty,
+                    product=product,
+                )
                 signal_engine.restore_state(position=opt_type, trade_today=1, last_reset_date=today)
                 logger.info("Restored simulated position from disk: %s (entry=%.2f)", symbol, entry_price)
                 return {"status": "recovered_simulation_position", "trade_today": 1, "symbol": symbol}
@@ -246,11 +262,18 @@ class StateManager:
             if broker_pos:
                 broker_sym = broker_pos["tradingsymbol"]
                 broker_qty = int(broker_pos["quantity"])
+                broker_product = str(broker_pos.get("product") or "MIS").upper()
                 opt_type = "CE" if broker_sym.endswith("CE") else "PE"
                 broker_fill = float(broker_pos.get("average_price") or broker_pos.get("buy_price") or 0.0)
                 trade_id = f"ORPHAN_{today_str}_{opt_type}"
 
-                order_manager.restore_state(symbol=broker_sym, entry_price=broker_fill, trade_id=trade_id, qty=broker_qty)
+                order_manager.restore_state(
+                    symbol=broker_sym,
+                    entry_price=broker_fill,
+                    trade_id=trade_id,
+                    qty=broker_qty,
+                    product=broker_product,
+                )
                 signal_engine.restore_state(position=opt_type, trade_today=1, last_reset_date=today)
 
                 # Create the active position file now that it is adopted
@@ -262,11 +285,12 @@ class StateManager:
                     entry_time=datetime.now(tz=IST),
                     qty=broker_qty,
                     spot_price=0.0,
+                    product=broker_product,
                 )
 
                 orphan_msg = (
                     f"🔄 **Orphan Position Discovered on Broker**\n"
-                    f"• Contract: `{broker_sym}` ({opt_type})\n"
+                    f"• Contract: `{broker_sym}` ({opt_type}, {broker_product})\n"
                     f"• Adopted into engine management. Created {self.state_file}."
                 )
                 logger.warning(orphan_msg)

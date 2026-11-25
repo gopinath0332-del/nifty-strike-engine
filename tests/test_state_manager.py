@@ -265,3 +265,41 @@ def test_reconcile_live_restart_after_exit_no_file(state_mgr, temp_state_file):
     assert engine.trade_today == 1
     assert engine.position is None
     assert not os.path.exists(temp_state_file)
+
+
+def test_reconcile_adopts_orphan_nrml_product(state_mgr, temp_state_file):
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {
+        "net": [
+            {
+                "tradingsymbol": "NIFTY26D0125900CE",
+                "exchange": "NFO",
+                "product": "NRML",
+                "quantity": 65,
+                "average_price": 260.75,
+            }
+        ]
+    }
+
+    engine = SignalEngine(state_manager=state_mgr)
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=MagicMock(),
+        live_order_placement=True,
+        state_manager=state_mgr,
+    )
+
+    result = state_mgr.reconcile(
+        kite=mock_kite,
+        order_manager=order_mgr,
+        signal_engine=engine,
+        live_mode=True,
+        notifier=MagicMock(),
+    )
+
+    assert result["status"] == "orphan_position_adopted"
+    assert order_mgr.open_product == "NRML"
+    loaded = state_mgr.load_active_position()
+    assert loaded is not None
+    assert loaded["product"] == "NRML"

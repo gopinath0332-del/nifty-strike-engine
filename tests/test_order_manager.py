@@ -354,4 +354,57 @@ def test_live_buy_adopts_existing_manual_position_and_skips_duplicate():
     mock_notifier.info.assert_called_once()
 
 
+def test_handle_exit_uses_adopted_nrml_product_and_retries_fill_price():
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {
+        "net": [
+            {
+                "tradingsymbol": "NIFTY26D0125900CE",
+                "quantity": 65,
+                "average_price": 260.75,
+                "product": "NRML",
+            }
+        ]
+    }
+    mock_kite.place_order.return_value = "EXIT_NRML_1"
+    # First orders() call has average_price=0 (not yet settled); second has 211.80
+    mock_kite.orders.side_effect = [
+        [{"order_id": "EXIT_NRML_1", "status": "OPEN", "average_price": 0}],
+        [{"order_id": "EXIT_NRML_1", "status": "COMPLETE", "average_price": 211.80}],
+    ]
+
+    mock_notifier = MagicMock()
+    engine = SignalEngine()
+    engine.on_entry_filled("CE")
+
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=mock_notifier,
+        lot_size=65,
+        live_order_placement=True,
+        state_manager=MagicMock(),
+    )
+    order_mgr.restore_state(
+        symbol="NIFTY26D0125900CE",
+        entry_price=260.75,
+        trade_id="ORPHAN_2026-11-25_CE",
+        qty=65,
+        product="NRML",
+    )
+
+    order_mgr.handle_exit(
+        reason="ST Flip Exit",
+        candle_time=datetime(2026, 11, 25, 12, 35, tzinfo=IST),
+        spot=25811.30,
+    )
+
+    assert mock_kite.place_order.call_args.kwargs["product"] == "NRML"
+    assert mock_kite.place_order.call_args.kwargs["market_protection"] == -1
+    exit_kwargs = mock_notifier.exit_signal.call_args.kwargs
+    assert exit_kwargs["exit_price"] == 211.80
+    assert order_mgr.open_product == "MIS"  # Reset to default after exit
+
+
+
 

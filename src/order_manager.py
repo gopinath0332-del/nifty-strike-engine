@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -91,6 +92,7 @@ class OrderManager:
         self._entry_price: float | None = None
         self._entry_time: datetime | None = None
         self._current_trade_id: str | None = None
+        self._open_product: str = KiteConnect.PRODUCT_MIS
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,22 +106,28 @@ class OrderManager:
     def entry_price(self) -> float | None:
         return self._entry_price
 
+    @property
+    def open_product(self) -> str:
+        return self._open_product
+
     def restore_state(
         self,
         symbol: str | None,
         entry_price: float | None,
         trade_id: str | None = None,
         qty: int | None = None,
+        product: str | None = None,
     ) -> None:
         """Restores open position state from disk/reconciliation on startup."""
         self._open_symbol = symbol
         self._entry_price = entry_price
         self._current_trade_id = trade_id
+        self._open_product = (product or KiteConnect.PRODUCT_MIS).upper()
         if qty is not None:
             self._qty = qty
         logger.info(
-            "OrderManager state restored: symbol=%s entry_price=%s trade_id=%s qty=%s",
-            self._open_symbol, self._entry_price, self._current_trade_id, self._qty,
+            "OrderManager state restored: symbol=%s entry_price=%s trade_id=%s qty=%s product=%s",
+            self._open_symbol, self._entry_price, self._current_trade_id, self._qty, self._open_product,
         )
 
     def check_margin_sufficient(self, required_margin: float, symbol: str) -> tuple[bool, float]:
@@ -171,6 +179,25 @@ class OrderManager:
         opt_exit_price: float | None = None
 
         if self._live:
+            exit_product = self._open_product or KiteConnect.PRODUCT_MIS
+            try:
+                positions_data = self._kite.positions()
+                net_positions = positions_data.get("net", []) if isinstance(positions_data, dict) else []
+                if isinstance(net_positions, list):
+                    for pos in net_positions:
+                        if str(pos.get("tradingsymbol", "")) == symbol and int(pos.get("quantity", 0)) > 0:
+                            broker_prod = str(pos.get("product") or "").upper()
+                            if broker_prod:
+                                if broker_prod != exit_product:
+                                    logger.warning(
+                                        "Exit product adjusted from %s to broker product %s for %s",
+                                        exit_product, broker_prod, symbol,
+                                    )
+                                exit_product = broker_prod
+                            break
+            except Exception as exc:
+                logger.warning("Could not verify broker position product before exit: %s", exc)
+
             try:
                 order_id = self._kite.place_order(
                     variety=KiteConnect.VARIETY_REGULAR,
@@ -178,12 +205,12 @@ class OrderManager:
                     tradingsymbol=symbol,
                     transaction_type=KiteConnect.TRANSACTION_TYPE_SELL,
                     quantity=self._qty,
-                    product=KiteConnect.PRODUCT_MIS,
+                    product=exit_product,
                     order_type=KiteConnect.ORDER_TYPE_MARKET,
                     validity=KiteConnect.VALIDITY_DAY,
                     market_protection=-1,
                 )
-                logger.info("LIVE exit order placed: order_id=%s", order_id)
+                logger.info("LIVE exit order placed: order_id=%s product=%s", order_id, exit_product)
                 fill = self._fetch_fill_price(order_id)
                 if fill is not None:
                     opt_exit_price = fill
@@ -193,16 +220,17 @@ class OrderManager:
                 return
         else:
             logger.info("[SIMULATION] Exit order skipped (LIVE_ORDER_PLACEMENT=false)")
-            # Try fetching real option LTP from Kite ticker/quote
-            if self._kite:
-                try:
-                    ltp_resp = self._kite.ltp(f"NFO:{symbol}")
-                    if f"NFO:{symbol}" in ltp_resp:
-                        last_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", 0.0))
-                        if last_price > 0:
-                            opt_exit_price = last_price
-                except Exception:
-                    pass
+
+        # If fill price wasn't immediately available, try fetching option LTP from Kite
+        if opt_exit_price is None and self._kite:
+            try:
+                ltp_resp = self._kite.ltp(f"NFO:{symbol}")
+                if f"NFO:{symbol}" in ltp_resp:
+                    last_price = float(ltp_resp[f"NFO:{symbol}"].get("last_price", 0.0))
+                    if last_price > 0:
+                        opt_exit_price = last_price
+            except Exception:
+                pass
 
         # If not determined via fill or Kite LTP, use provided exit_price if valid option price
         if opt_exit_price is None and exit_price and 0 < exit_price <= 5000.0:
@@ -275,6 +303,7 @@ class OrderManager:
         self._entry_price = None
         self._entry_time  = None
         self._current_trade_id = None
+        self._open_product = KiteConnect.PRODUCT_MIS
 
     def _record_and_evaluate_sizing(
         self,
@@ -391,9 +420,16 @@ class OrderManager:
                 sym = str(pos.get("tradingsymbol", ""))
                 if qty > 0 and sym.startswith("NIFTY") and (sym.endswith("CE") or sym.endswith("PE")):
                     opt_type = "CE" if sym.endswith("CE") else "PE"
+                    broker_product = str(pos.get("product") or KiteConnect.PRODUCT_MIS).upper()
                     fill = float(pos.get("average_price") or pos.get("buy_price") or 0.0)
                     trade_id = f"SYNC_{candle_time.strftime('%Y%m%d_%H%M%S')}_{opt_type}"
-                    self.restore_state(symbol=sym, entry_price=fill, trade_id=trade_id, qty=qty)
+                    self.restore_state(
+                        symbol=sym,
+                        entry_price=fill,
+                        trade_id=trade_id,
+                        qty=qty,
+                        product=broker_product,
+                    )
                     self._entry_time = candle_time
                     self._engine.on_entry_filled(opt_type)
                     if self._state_manager:
@@ -406,12 +442,13 @@ class OrderManager:
                                 entry_time=candle_time,
                                 qty=qty,
                                 spot_price=0.0,
+                                product=broker_product,
                             )
                         except Exception as exc:
                             logger.warning("Failed to persist synced position: %s", exc)
                     msg = (
                         f"🔄 **Existing Broker Position Detected — Entry Skipped**\n"
-                        f"• Contract: `{sym}` ({opt_type}, qty={qty}, avg=₹{fill:.2f})\n"
+                        f"• Contract: `{sym}` ({opt_type}, {broker_product}, qty={qty}, avg=₹{fill:.2f})\n"
                         f"• Adopted into engine management; skipping duplicate buy order."
                     )
                     logger.warning(msg)
@@ -510,6 +547,7 @@ class OrderManager:
         self._open_symbol = symbol
         self._entry_price = fill_price
         self._entry_time  = candle_time
+        self._open_product = KiteConnect.PRODUCT_MIS
         self._engine.on_entry_filled(option_type)
 
         # Send Discord alert
@@ -567,6 +605,7 @@ class OrderManager:
                     entry_time=candle_time,
                     qty=self._qty,
                     spot_price=spot,
+                    product=KiteConnect.PRODUCT_MIS,
                 )
             except Exception as exc:
                 logger.warning("Failed to record entry in state manager: %s", exc)
@@ -616,17 +655,28 @@ class OrderManager:
                 expiry=expiry_display,
             )
 
-    def _fetch_fill_price(self, order_id: str) -> float | None:
+    def _fetch_fill_price(self, order_id: str, retries: int = 3, delay_s: float = 0.3) -> float | None:
         """
-        Fetch average fill price from Kite order book.
+        Fetch average fill price from Kite order book with brief retries
+        so market fills have time to settle in Kite's order API.
         Returns None if unavailable (graceful degradation).
         """
-        try:
-            orders = self._kite.orders()
-            for o in orders:
-                if str(o.get("order_id")) == str(order_id):
-                    return float(o.get("average_price") or 0) or None
-        except Exception as exc:
-            logger.warning("Could not fetch fill price: %s", exc)
+        for attempt in range(retries):
+            try:
+                orders = self._kite.orders()
+                for o in orders:
+                    if str(o.get("order_id")) == str(order_id):
+                        avg = float(o.get("average_price") or 0)
+                        if avg > 0:
+                            return avg
+                        status = str(o.get("status") or "").upper()
+                        if status in ("REJECTED", "CANCELLED"):
+                            return None
+            except Exception as exc:
+                logger.warning("Could not fetch fill price (attempt %d): %s", attempt + 1, exc)
+                return None
+
+            if attempt < retries - 1:
+                time.sleep(delay_s)
         return None
 
