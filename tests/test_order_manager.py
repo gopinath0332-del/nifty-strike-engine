@@ -275,3 +275,83 @@ def test_record_sizing_weekly_and_monthly_strike_parsing():
     assert rec2["exit_price"] == 270.0
 
 
+def test_live_orders_pass_market_protection():
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {"net": []}
+    mock_kite.margins.return_value = {"available": {"live_balance": 100000.0}}
+    mock_kite.place_order.side_effect = ["BUY_1", "SELL_1"]
+    mock_kite.orders.return_value = [
+        {"order_id": "BUY_1", "average_price": 248.8},
+        {"order_id": "SELL_1", "average_price": 265.0},
+    ]
+
+    engine = SignalEngine()
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=MagicMock(),
+        lot_size=65,
+        live_order_placement=True,
+        state_manager=MagicMock(),
+    )
+
+    now = datetime(2026, 11, 25, 11, 0, tzinfo=IST)
+    order_mgr._buy(
+        symbol="NIFTY26D0125900CE",
+        option_type="CE",
+        spot=25878.5,
+        candle_time=now,
+        indicators={"rsi": 77.6},
+        estimated_ltp=248.8,
+    )
+    assert mock_kite.place_order.call_args_list[0].kwargs["market_protection"] == -1
+
+    order_mgr.handle_exit(reason="ST Flip Exit", candle_time=now, spot=25900.0)
+    assert mock_kite.place_order.call_args_list[1].kwargs["market_protection"] == -1
+
+
+def test_live_buy_adopts_existing_manual_position_and_skips_duplicate():
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {
+        "net": [
+            {
+                "tradingsymbol": "NIFTY26D0125900CE",
+                "quantity": 65,
+                "average_price": 252.5,
+                "product": "MIS",
+            }
+        ]
+    }
+    mock_notifier = MagicMock()
+    mock_state_mgr = MagicMock()
+    engine = SignalEngine()
+
+    order_mgr = OrderManager(
+        kite=mock_kite,
+        signal_engine=engine,
+        notifier=mock_notifier,
+        lot_size=65,
+        live_order_placement=True,
+        state_manager=mock_state_mgr,
+    )
+
+    now = datetime(2026, 11, 25, 11, 5, tzinfo=IST)
+    order_mgr._buy(
+        symbol="NIFTY26D0125950CE",
+        option_type="CE",
+        spot=25907.9,
+        candle_time=now,
+        indicators={"rsi": 79.6},
+        estimated_ltp=245.5,
+    )
+
+    mock_kite.place_order.assert_not_called()
+    assert order_mgr.open_symbol == "NIFTY26D0125900CE"
+    assert order_mgr.entry_price == 252.5
+    assert engine.position == "CE"
+    assert engine.trade_today == 1
+    mock_state_mgr.record_entry.assert_called_once()
+    mock_notifier.info.assert_called_once()
+
+
+

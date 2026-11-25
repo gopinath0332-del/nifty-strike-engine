@@ -181,6 +181,7 @@ class OrderManager:
                     product=KiteConnect.PRODUCT_MIS,
                     order_type=KiteConnect.ORDER_TYPE_MARKET,
                     validity=KiteConnect.VALIDITY_DAY,
+                    market_protection=-1,
                 )
                 logger.info("LIVE exit order placed: order_id=%s", order_id)
                 fill = self._fetch_fill_price(order_id)
@@ -371,6 +372,75 @@ class OrderManager:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _sync_existing_broker_trade(self, candle_time: datetime) -> bool:
+        """
+        Checks Kite net positions before placing a new LIVE buy order.
+        If an open NIFTY option position or completed trade from today already
+        exists on the broker (e.g. placed manually), adopts/syncs engine state
+        and returns True so a duplicate order is not placed.
+        """
+        try:
+            positions_data = self._kite.positions()
+            net_positions = positions_data.get("net", []) if isinstance(positions_data, dict) else []
+            if not isinstance(net_positions, list):
+                return False
+
+            # 1. Check for an active open NIFTY option position
+            for pos in net_positions:
+                qty = int(pos.get("quantity", 0))
+                sym = str(pos.get("tradingsymbol", ""))
+                if qty > 0 and sym.startswith("NIFTY") and (sym.endswith("CE") or sym.endswith("PE")):
+                    opt_type = "CE" if sym.endswith("CE") else "PE"
+                    fill = float(pos.get("average_price") or pos.get("buy_price") or 0.0)
+                    trade_id = f"SYNC_{candle_time.strftime('%Y%m%d_%H%M%S')}_{opt_type}"
+                    self.restore_state(symbol=sym, entry_price=fill, trade_id=trade_id, qty=qty)
+                    self._entry_time = candle_time
+                    self._engine.on_entry_filled(opt_type)
+                    if self._state_manager:
+                        try:
+                            self._state_manager.record_entry(
+                                trade_id=trade_id,
+                                symbol=sym,
+                                option_type=opt_type,
+                                entry_price=fill,
+                                entry_time=candle_time,
+                                qty=qty,
+                                spot_price=0.0,
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to persist synced position: %s", exc)
+                    msg = (
+                        f"🔄 **Existing Broker Position Detected — Entry Skipped**\n"
+                        f"• Contract: `{sym}` ({opt_type}, qty={qty}, avg=₹{fill:.2f})\n"
+                        f"• Adopted into engine management; skipping duplicate buy order."
+                    )
+                    logger.warning(msg)
+                    self._notify.info(msg)
+                    return True
+
+            # 2. Check if a NIFTY option trade was already executed and closed today
+            for pos in net_positions:
+                sym = str(pos.get("tradingsymbol", ""))
+                buy_qty = int(pos.get("day_buy_quantity") or pos.get("buy_quantity") or 0)
+                if buy_qty > 0 and sym.startswith("NIFTY") and (sym.endswith("CE") or sym.endswith("PE")):
+                    self._engine.restore_state(
+                        position=None,
+                        trade_today=1,
+                        last_reset_date=candle_time.astimezone(IST).date(),
+                    )
+                    msg = (
+                        f"ℹ️ **Broker Trade Already Executed Today — Entry Skipped**\n"
+                        f"• Contract: `{sym}` (buy_qty={buy_qty})\n"
+                        f"• `trade_today` synced to 1; skipping duplicate buy order."
+                    )
+                    logger.warning(msg)
+                    self._notify.info(msg)
+                    return True
+        except Exception as exc:
+            logger.warning("Could not verify existing Kite positions before entry: %s", exc)
+
+        return False
+
     def _buy(
         self,
         symbol: str,
@@ -384,6 +454,10 @@ class OrderManager:
             "Placing %s buy | symbol=%s qty=%d live=%s",
             option_type, symbol, self._qty, self._live,
         )
+
+        # Pre-entry broker sync (prevents duplicate orders if a manual trade exists)
+        if self._live and self._sync_existing_broker_trade(candle_time):
+            return
 
         # Margin pre-check
         premium_estimate = estimated_ltp if (estimated_ltp and estimated_ltp > 0) else (spot * 0.01)
@@ -419,6 +493,7 @@ class OrderManager:
                     product=KiteConnect.PRODUCT_MIS,
                     order_type=KiteConnect.ORDER_TYPE_MARKET,
                     validity=KiteConnect.VALIDITY_DAY,
+                    market_protection=-1,
                 )
                 logger.info("LIVE buy order placed: order_id=%s", order_id)
                 # Fetch average fill price (best-effort)
