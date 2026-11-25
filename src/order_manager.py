@@ -533,8 +533,10 @@ class OrderManager:
                     market_protection=-1,
                 )
                 logger.info("LIVE buy order placed: order_id=%s", order_id)
-                # Fetch average fill price (best-effort)
+                # Fetch average fill price (best-effort, fall back to estimated LTP)
                 fill_price = self._fetch_fill_price(order_id)
+                if fill_price is None and estimated_ltp and estimated_ltp > 0:
+                    fill_price = estimated_ltp
             except Exception as exc:
                 logger.error("Buy order failed: %s", exc)
                 self._notify.error(f"Buy order failed for {symbol}: {exc}")
