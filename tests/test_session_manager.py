@@ -68,10 +68,23 @@ def test_is_market_hours():
     assert is_market_hours(mon_late) is False
 
 
-def test_preseed_historical_candles_success():
+def _mock_premarket_datetime(monkeypatch, fake_now=None):
+    if fake_now is None:
+        fake_now = datetime(2026, 11, 26, 9, 0, 0, tzinfo=IST)
+
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now
+
+    monkeypatch.setattr("src.session_manager.datetime", MockDatetime)
+    return fake_now
+
+
+def test_preseed_historical_candles_success(monkeypatch):
     mock_kite = MagicMock()
-    now_ist = datetime.now(tz=IST)
-    yesterday = now_ist - timedelta(days=1)
+    now_ist = _mock_premarket_datetime(monkeypatch)
+    yesterday = datetime(2026, 11, 25, 9, 15, tzinfo=IST)
 
     # 300 dummy historical candles
     sample_records = [
@@ -116,7 +129,8 @@ def test_preseed_historical_candles_success():
     assert first_candle["date"] == yesterday.date()
 
 
-def test_preseed_historical_candles_empty():
+def test_preseed_historical_candles_empty(monkeypatch):
+    _mock_premarket_datetime(monkeypatch)
     mock_kite = MagicMock()
     mock_kite.historical_data.return_value = []
 
@@ -136,7 +150,8 @@ def test_preseed_historical_candles_empty():
     assert len(sm._candle_buffer) == 0
 
 
-def test_preseed_historical_candles_exception_graceful():
+def test_preseed_historical_candles_exception_graceful(monkeypatch):
+    _mock_premarket_datetime(monkeypatch)
     mock_kite = MagicMock()
     mock_kite.historical_data.side_effect = Exception("API connection timed out")
 
@@ -156,7 +171,8 @@ def test_preseed_historical_candles_exception_graceful():
     assert len(sm._candle_buffer) == 0
 
 
-def test_preseed_enables_immediate_pivot_and_indicator_readiness():
+def test_preseed_enables_immediate_pivot_and_indicator_readiness(monkeypatch):
+    _mock_premarket_datetime(monkeypatch)
     mock_kite = MagicMock()
     yesterday = datetime(2026, 11, 6, 9, 15, tzinfo=IST)
     today = datetime(2026, 11, 9, 9, 15, tzinfo=IST)
@@ -368,6 +384,92 @@ def test_session_watchdog_dispatches_eod_summary_after_1530(monkeypatch):
 
     sm._send_eod_summary.assert_called_once_with(fake_now)
     sm.stop.assert_called_once()
+
+
+def test_standby_skips_init_warmup(monkeypatch):
+    # Post-market 15:35 IST on a trading day should skip pivot & candle warmup on __init__
+    _mock_premarket_datetime(monkeypatch, datetime(2026, 11, 26, 15, 35, 0, tzinfo=IST))
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+
+    assert len(sm._candle_buffer) == 0
+    assert sm._daily_pivots is None
+    mock_kite.historical_data.assert_not_called()
+
+
+def test_intentional_stop_suppresses_ws_error(monkeypatch):
+    _mock_premarket_datetime(monkeypatch, datetime(2026, 11, 26, 11, 0, 0, tzinfo=IST))
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+    sm._ticker = MagicMock()
+    sm.stop()
+
+    sm._on_error(None, 1006, "connection was closed uncleanly")
+    sm._on_close(None, 1006, "connection was closed uncleanly")
+    mock_notifier.error.assert_not_called()
+
+
+def test_heartbeat_watchdog_holiday_recheck_stops_session(monkeypatch):
+    _mock_premarket_datetime(monkeypatch, datetime(2026, 11, 26, 10, 0, 0, tzinfo=IST))
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+    sm._running = True
+    sm._ticker = MagicMock()
+
+    import time as _t
+    sm._last_tick_time = _t.time() - 400.0
+    sm._last_reconnect_attempt = 0.0
+    sm._consecutive_stale_reconnects = 2  # Next attempt is #3 -> triggers holiday re-check
+
+    monkeypatch.setattr("src.session_manager.sync_nse_holidays", MagicMock(return_value={}))
+    # First call (is_trading_day at 15:30 check) False/True doesn't matter since time < 15:30;
+    # is_market_hours -> True; is_market_holiday(..., auto_sync=False) -> True
+    monkeypatch.setattr("src.session_manager.is_market_holiday", lambda *a, **kw: True)
+    monkeypatch.setattr("src.session_manager.get_holiday_name", lambda *a, **kw: "Special Exchange Holiday")
+    sm.stop = MagicMock(side_effect=lambda: setattr(sm, "_running", False))
+
+    sm._session_watchdog()
+
+    mock_notifier.market_holiday.assert_called_once()
+    sm.stop.assert_called_once()
+
+
+def test_signals_logger_not_propagating(tmp_path, monkeypatch):
+    import logging
+    import src.logger as logger_mod
+
+    monkeypatch.setattr(logger_mod, "LOG_DIR", str(tmp_path))
+    logger_mod.setup_logger("INFO")
+    sig_logger = logging.getLogger("signals")
+    assert sig_logger.propagate is False
+
 
 
 

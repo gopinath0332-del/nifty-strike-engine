@@ -77,7 +77,7 @@ def setup_logger(log_level: str = "INFO") -> logging.Logger:
     signal_fmt = logging.Formatter("%(asctime)s %(message)s", datefmt=DATE_FORMAT)
     signal_handler.setFormatter(signal_fmt)
     signal_logger.addHandler(signal_handler)
-    signal_logger.propagate = True  # Also show in main engine log
+    signal_logger.propagate = False  # Keep candle evals out of main engine.log
 
     logger = logging.getLogger("nifty_strike_engine")
     logger.info("Logging initialized. App log: %s | Level: %s", app_log_path, log_level.upper())

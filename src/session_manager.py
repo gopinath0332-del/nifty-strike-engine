@@ -55,6 +55,7 @@ from src.market_calendar import (
     is_market_hours,
     is_trading_day,
     is_weekend,
+    sync_nse_holidays,
 )
 from src.order_manager import OrderManager
 from src.position_sizer import PositionSizer
@@ -97,9 +98,12 @@ class SessionManager:
         # Tick tracking for heartbeat watchdog
         self._last_tick_time: float | None = None
         self._last_reconnect_attempt: float = 0.0
+        self._consecutive_stale_reconnects: int = 0
 
         self._ticker: KiteTicker | None = None
         self._running: bool = False
+        self._intentional_stop: bool = False
+        self._recovering_ws: bool = False
 
         # Build Kite REST client (or use injected client)
         self._kite = (
@@ -197,13 +201,27 @@ class SessionManager:
         # Rolling OHLCV buffer (deque of dicts → converted to DataFrame on demand)
         self._candle_buffer: deque[dict] = deque(maxlen=300)
 
-        # Cache official Daily Pivots (P, R1, S1) from Kite interval="day"
+        # Cache official Daily Pivots (P, R1, S1) & pre-seed historical candles on startup
+        # Skip during weekend, holiday, or post-market (>= 15:30) standby to avoid wasted API calls
+        # and pre-login token errors; _start_active_session() warms them up before market open.
         self._daily_pivots: dict[str, float] | None = None
-        self.fetch_daily_pivots()
-
-        # Pre-seed historical candles on startup so indicators & pivots are ready
-        preseed_cnt = getattr(settings, "warmup_candles", 250)
-        self.preseed_historical_candles(count=preseed_cnt)
+        now_init_ist = datetime.now(tz=IST)
+        should_warmup_on_init = (
+            not settings.enforce_market_hours
+            or (
+                is_trading_day(now_init_ist, self._custom_holidays)
+                and now_init_ist.time() < time(15, 30)
+            )
+        )
+        if should_warmup_on_init:
+            self.fetch_daily_pivots()
+            preseed_cnt = getattr(settings, "warmup_candles", 250)
+            self.preseed_historical_candles(count=preseed_cnt)
+        else:
+            logger.info(
+                "Skipping startup pivot/candle warmup during standby (%s IST).",
+                now_init_ist.strftime("%Y-%m-%d %H:%M"),
+            )
 
         # Daily metrics for EOD summary
         self._candles_evaluated_today: int = 0
@@ -293,9 +311,14 @@ class SessionManager:
 
     def _start_active_session(self) -> None:
         """Starts WebSocket and watchdog for an active trading session."""
+        if not self._daily_pivots:
+            self.fetch_daily_pivots()
         if len(self._candle_buffer) < MIN_CANDLES:
             preseed_cnt = getattr(self._s, "warmup_candles", 250)
             self.preseed_historical_candles(count=preseed_cnt)
+        self._intentional_stop = False
+        self._recovering_ws = False
+        self._consecutive_stale_reconnects = 0
         self._send_morning_briefing()
         threading.Thread(target=self._session_watchdog, name="SessionWatchdog", daemon=True).start()
         self._start_ticker()
@@ -604,11 +627,34 @@ class SessionManager:
                         stale_sec = _time.time() - self._last_tick_time
                         if stale_sec > 60.0:
                             now_epoch = _time.time()
-                            if (now_epoch - self._last_reconnect_attempt) > 60.0:
+                            cooldown = min(300.0, 60.0 * (2 ** min(self._consecutive_stale_reconnects, 3)))
+                            if (now_epoch - self._last_reconnect_attempt) > cooldown:
                                 self._last_reconnect_attempt = now_epoch
+                                self._consecutive_stale_reconnects += 1
+                                if self._consecutive_stale_reconnects >= 3:
+                                    try:
+                                        sync_nse_holidays(force=True)
+                                        if is_market_holiday(now_ist, self._custom_holidays, auto_sync=False):
+                                            holiday_name = get_holiday_name(now_ist, self._custom_holidays, auto_sync=False) or "NSE Trading Holiday"
+                                            logger.info(
+                                                "🏖️ [HEARTBEAT WATCHDOG] Unannounced holiday detected after %d stale checks: %s. Stopping session.",
+                                                self._consecutive_stale_reconnects,
+                                                holiday_name,
+                                            )
+                                            self._notifier.market_holiday(
+                                                holiday_name=holiday_name,
+                                                date_str=now_ist.strftime("%Y-%m-%d"),
+                                                day_name=now_ist.strftime("%A"),
+                                                next_session=get_next_trading_day(now_ist, self._custom_holidays).strftime("%A, %d %b %Y"),
+                                            )
+                                            self.stop()
+                                            break
+                                    except Exception as exc:
+                                        logger.debug("Holiday re-check failed during stale WS watchdog: %s", exc)
                                 logger.warning(
-                                    "⚠️ [HEARTBEAT WATCHDOG] No ticks received for %ds (threshold 60s). Recovering stale WebSocket...",
+                                    "⚠️ [HEARTBEAT WATCHDOG] No ticks received for %ds (threshold 60s, attempt #%d). Recovering stale WebSocket...",
                                     int(stale_sec),
+                                    self._consecutive_stale_reconnects,
                                 )
                                 self._recover_stale_websocket(int(stale_sec))
 
@@ -632,6 +678,7 @@ class SessionManager:
                 ws_obj = getattr(self._ticker, "ws", None)
                 if ws_obj and hasattr(ws_obj, "dropConnection"):
                     logger.info("Dropping stalled WebSocket connection via dropConnection(abort=True)...")
+                    self._recovering_ws = True
                     ws_obj.dropConnection(abort=True)
                 elif hasattr(self._ticker, "resubscribe"):
                     logger.info("Triggering ticker.resubscribe()...")
@@ -707,6 +754,7 @@ class SessionManager:
     def stop(self) -> None:
         """Gracefully stop the WebSocket and exit."""
         logger.info("Stopping session manager...")
+        self._intentional_stop = True
         self._running = False
         if self._ticker:
             try:
@@ -740,12 +788,14 @@ class SessionManager:
         self._ticker.connect(threaded=False)
 
     def _on_connect(self, ws, response) -> None:  # noqa: ANN001
+        self._recovering_ws = False
         logger.info("WebSocket connected. Subscribing to NIFTY 50 (token %d).", NIFTY_TOKEN)
         self._ticker.subscribe([NIFTY_TOKEN])
         self._ticker.set_mode(self._ticker.MODE_FULL, [NIFTY_TOKEN])
 
     def _on_ticks(self, ws, ticks: list[dict]) -> None:  # noqa: ANN001
         self._last_tick_time = _time.time()
+        self._consecutive_stale_reconnects = 0
         for tick in ticks:
             if tick.get("instrument_token") != NIFTY_TOKEN:
                 continue
@@ -771,9 +821,15 @@ class SessionManager:
                 ).start()
 
     def _on_close(self, ws, code, reason) -> None:  # noqa: ANN001
+        if self._intentional_stop or self._recovering_ws:
+            logger.info("WebSocket closed during %s (code=%s)", "shutdown" if self._intentional_stop else "recovery", code)
+            return
         logger.warning("WebSocket closed: code=%s reason=%s", code, reason)
 
     def _on_error(self, ws, code, reason) -> None:  # noqa: ANN001
+        if self._intentional_stop or self._recovering_ws:
+            logger.debug("Suppressed expected WebSocket error during %s: code=%s reason=%s", "shutdown" if self._intentional_stop else "recovery", code, reason)
+            return
         logger.error("WebSocket error: code=%s reason=%s", code, reason)
         now_ist = datetime.now(tz=IST)
         if is_market_hours(now_ist, self._custom_holidays):

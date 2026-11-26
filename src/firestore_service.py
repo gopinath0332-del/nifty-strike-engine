@@ -55,7 +55,7 @@ class FirestoreService:
     def _init_client(self) -> None:
         """Initialize Firebase app instance and Firestore client."""
         if not os.path.exists(self.credentials_path):
-            logger.warning(
+            logger.info(
                 "Firestore service account key not found at '%s'. "
                 "Firestore syncing will be disabled.",
                 self.credentials_path,
