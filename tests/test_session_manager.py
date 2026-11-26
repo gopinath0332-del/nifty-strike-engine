@@ -338,4 +338,37 @@ def test_startup_reconciliation_past_eod_auto_closes(monkeypatch):
     assert sm._engine.position is None
 
 
+def test_session_watchdog_dispatches_eod_summary_after_1530(monkeypatch):
+    mock_kite = MagicMock()
+    mock_notifier = MagicMock()
+    mock_state = MagicMock()
+    mock_state.reconcile.return_value = {"status": "CLEAN"}
+
+    sm = SessionManager(
+        settings=_mock_settings(),
+        kite_client=mock_kite,
+        notifier=mock_notifier,
+        state_manager=mock_state,
+    )
+    sm._running = True
+
+    # 2026-11-26 15:30:03 IST (Thursday, trading day, 3s past market close)
+    fake_now = datetime(2026, 11, 26, 15, 30, 3, tzinfo=IST)
+
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now
+
+    monkeypatch.setattr("src.session_manager.datetime", MockDatetime)
+    sm._send_eod_summary = MagicMock()
+    sm.stop = MagicMock(side_effect=lambda: setattr(sm, "_running", False))
+
+    sm._session_watchdog()
+
+    sm._send_eod_summary.assert_called_once_with(fake_now)
+    sm.stop.assert_called_once()
+
+
+
 

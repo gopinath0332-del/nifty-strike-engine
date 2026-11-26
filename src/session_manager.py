@@ -583,13 +583,21 @@ class SessionManager:
                         spot=exit_spot if exit_spot and exit_spot > 0 else 0.0,
                     )
 
+                # 2. Market Close Guard (15:30 IST on a trading day)
+                # Evaluated before is_market_hours() since is_market_hours() is False after 15:30:00.
+                if is_trading_day(now_ist, self._custom_holidays) and now_t >= time(15, 30):
+                    logger.info("Market close reached (15:30 IST). Dispatching EOD summary and stopping session...")
+                    self._send_eod_summary(now_ist)
+                    self.stop()
+                    break
+
                 # Holiday & Market Hours Guard: Exit watchdog if market is closed or today is a holiday
                 if not is_market_hours(now_ist, self._custom_holidays):
                     logger.info("Session watchdog: Market is closed or today is a holiday. Shutting down active session...")
                     self.stop()
                     break
 
-                # 2. WebSocket Health Guard (Tick Heartbeat)
+                # 3. WebSocket Health Guard (Tick Heartbeat)
                 # Evaluated during active trading hours (09:15 to 15:30 IST)
                 if time(9, 15) <= now_t < time(15, 30):
                     if self._ticker is not None and self._last_tick_time is not None:
@@ -603,13 +611,6 @@ class SessionManager:
                                     int(stale_sec),
                                 )
                                 self._recover_stale_websocket(int(stale_sec))
-
-                # 3. Market Close Guard (15:30 IST)
-                if now_t >= time(15, 30):
-                    logger.info("Market close reached (15:30 IST). Dispatching EOD summary and stopping session...")
-                    self._send_eod_summary(now_ist)
-                    self.stop()
-                    break
 
             except Exception as exc:
                 logger.error("Unexpected error in session watchdog loop: %s", exc)
