@@ -45,7 +45,7 @@ timing:
 
 # Position Sizing & Scaling Recommendations
 sizing:
-  mode: "DYNAMIC" # FIXED (strictly lot_size) or DYNAMIC (capital-compounding lot sizing)
+  mode: "FIXED" # FIXED (strictly lot_size) or DYNAMIC (capital-compounding lot sizing)
   use_broker_balance: false # In LIVE mode, fetch real-time liquid cash from Zerodha
   initial_capital: 100000 # Starting capital in INR (used in backtesting & simulation fallback)
   alloc_pct: 0.35 # Fraction of current capital deployed per trade (0.35 = 35% trade, 65% drawdown cushion)
