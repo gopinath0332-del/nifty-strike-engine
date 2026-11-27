@@ -72,13 +72,14 @@ class PositionSizer:
 
     def __init__(
         self,
-        initial_capital: float = 150000.0,
+        initial_capital: float = 100000.0,
         base_lots: int = 1,
-        max_lots: int = 5,
+        max_lots: int = 10,
         profit_step_per_lot: float = 40000.0,
         min_trades_per_scale: int = 40,
         step_down_dd_pct: float = 12.0,
         units_per_lot: int = 65,
+        alloc_pct: float = 0.35,
     ) -> None:
         self.initial_capital = float(initial_capital)
         self.base_lots = int(base_lots)
@@ -87,6 +88,18 @@ class PositionSizer:
         self.min_trades_per_scale = int(min_trades_per_scale)
         self.step_down_dd_pct = float(step_down_dd_pct)
         self.units_per_lot = int(units_per_lot)
+        self.alloc_pct = float(alloc_pct)
+
+    def calculate_compounding_lots(self, capital: float, option_premium: float) -> int:
+        """
+        Computes dynamic lot count using capital-allocation compounding:
+            lots = clamp(floor((capital * alloc_pct) / (option_premium * units_per_lot)), base_lots, max_lots)
+        """
+        est_lot_cost = float(option_premium) * self.units_per_lot
+        if est_lot_cost <= 0 or capital <= 0:
+            return self.base_lots
+        lots = int((float(capital) * self.alloc_pct) // est_lot_cost)
+        return max(self.base_lots, min(self.max_lots, lots))
 
     # ------------------------------------------------------------------
     # Evaluation Logic
@@ -398,6 +411,227 @@ class PositionSizer:
         }
 
         return sim_df, metrics
+
+    def simulate_compounding_backtest(
+        self,
+        trades_df: pd.DataFrame,
+        initial_capital: float = 100000.0,
+        alloc_pct: float = 0.35,
+        max_lots: int = 10,
+        slippage_pts: float = 1.0,
+        include_charges: bool = True,
+        brokerage_per_order: float = 20.0,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """
+        Simulates capital-compounding dynamic lot sizing over a historical backtest,
+        including Indian NSE options buying charges (Brokerage, STT, Exchange, SEBI,
+        Stamp Duty, GST) and round-trip slippage.
+
+        Formula:
+            capital_t = initial_capital + cumulative_net_pnl_{t-1}
+            est_lot_cost_t = entry_spot_t * 0.01 * units_per_lot
+            lots_t = clamp(floor((capital_t * alloc_pct) / est_lot_cost_t), 1, max_lots)
+        """
+        if trades_df.empty:
+            return trades_df, {}
+
+        sim_df = trades_df.copy().reset_index(drop=True)
+        running_equity = float(initial_capital)
+        peak_equity = float(initial_capital)
+        prev_lots = 1
+
+        cap_before_list: list[float] = []
+        lots_list: list[int] = []
+        qty_list: list[int] = []
+        margin_list: list[float] = []
+        fixed_gross_list: list[float] = []
+        fixed_charges_list: list[float] = []
+        fixed_slip_list: list[float] = []
+        fixed_net_list: list[float] = []
+        dyn_gross_list: list[float] = []
+        dyn_charges_list: list[float] = []
+        dyn_slip_list: list[float] = []
+        pnl_list: list[float] = []
+        equity_list: list[float] = []
+        action_list: list[str] = []
+        events: list[dict[str, Any]] = []
+
+        for idx, row in sim_df.iterrows():
+            opt_pts = float(row.get("opt_points", 0.0))
+            entry_spot = float(row.get("entry_spot", 25000.0))
+            trade_dt = str(row.get("date", ""))
+
+            entry_prem = entry_spot * 0.01
+            exit_prem = max(0.05, entry_prem + opt_pts)
+            est_lot_cost = entry_prem * self.units_per_lot
+
+            lots = int((running_equity * alloc_pct) // est_lot_cost) if est_lot_cost > 0 else 1
+            lots = max(1, min(max_lots, lots))
+            qty = lots * self.units_per_lot
+            margin_used = round(est_lot_cost * lots, 2)
+
+            if idx == 0:
+                action_taken = "INITIAL"
+            elif lots > prev_lots:
+                action_taken = f"SCALE_UP ({prev_lots}->{lots})"
+                events.append({
+                    "date": trade_dt,
+                    "trade_num": idx + 1,
+                    "type": "SCALE_UP",
+                    "from_lots": prev_lots,
+                    "to_lots": lots,
+                    "capital": round(running_equity, 2),
+                    "details": f"Capital reached ₹{running_equity:,.2f}. Scaled up from {prev_lots} to {lots} lot(s) ({qty} qty).",
+                })
+            elif lots < prev_lots:
+                action_taken = f"STEP_DOWN ({prev_lots}->{lots})"
+                events.append({
+                    "date": trade_dt,
+                    "trade_num": idx + 1,
+                    "type": "STEP_DOWN",
+                    "from_lots": prev_lots,
+                    "to_lots": lots,
+                    "capital": round(running_equity, 2),
+                    "details": f"Capital dipped to ₹{running_equity:,.2f}. Stepped down from {prev_lots} to {lots} lot(s) ({qty} qty).",
+                })
+            else:
+                action_taken = "MAINTAIN"
+
+            # Fixed 1-lot gross, charges, slippage, net
+            f_gross = round(opt_pts * self.units_per_lot, 2)
+            f_chg = round(
+                self.calculate_options_charges(
+                    entry_prem * self.units_per_lot,
+                    exit_prem * self.units_per_lot,
+                    brokerage_per_order=brokerage_per_order,
+                )["total"],
+                2,
+            ) if include_charges else 0.0
+            f_slip = round(slippage_pts * self.units_per_lot, 2)
+            f_net = round(f_gross - f_chg - f_slip, 2)
+
+            # Dynamic lots gross, charges, slippage, net
+            d_gross = round(opt_pts * qty, 2)
+            d_chg = round(
+                self.calculate_options_charges(
+                    entry_prem * qty,
+                    exit_prem * qty,
+                    brokerage_per_order=brokerage_per_order,
+                )["total"],
+                2,
+            ) if include_charges else 0.0
+            d_slip = round(slippage_pts * qty, 2)
+            d_net = round(d_gross - d_chg - d_slip, 2)
+
+            cap_before_list.append(round(running_equity, 2))
+            running_equity = round(running_equity + d_net, 2)
+            peak_equity = max(peak_equity, running_equity)
+
+            lots_list.append(lots)
+            qty_list.append(qty)
+            margin_list.append(margin_used)
+            fixed_gross_list.append(f_gross)
+            fixed_charges_list.append(f_chg)
+            fixed_slip_list.append(f_slip)
+            fixed_net_list.append(f_net)
+            dyn_gross_list.append(d_gross)
+            dyn_charges_list.append(d_chg)
+            dyn_slip_list.append(d_slip)
+            pnl_list.append(d_net)
+            equity_list.append(running_equity)
+            action_list.append(action_taken)
+            prev_lots = lots
+
+        sim_df["gross_pnl"] = fixed_gross_list
+        sim_df["fixed_charges"] = fixed_charges_list
+        sim_df["fixed_slippage"] = fixed_slip_list
+        sim_df["pnl"] = fixed_net_list
+
+        sim_df["capital_before"] = cap_before_list
+        sim_df["dynamic_lots"] = lots_list
+        sim_df["dynamic_qty"] = qty_list
+        sim_df["dynamic_margin"] = margin_list
+        sim_df["dynamic_gross_pnl"] = dyn_gross_list
+        sim_df["dynamic_charges"] = dyn_charges_list
+        sim_df["dynamic_slippage"] = dyn_slip_list
+        sim_df["dynamic_pnl"] = pnl_list
+        sim_df["dynamic_equity"] = equity_list
+        sim_df["dynamic_action"] = action_list
+
+        sim_df["dynamic_peak"] = sim_df["dynamic_equity"].cummax()
+        sim_df["dynamic_dd_inr"] = sim_df["dynamic_equity"] - sim_df["dynamic_peak"]
+        sim_df["dynamic_dd_pct"] = (sim_df["dynamic_dd_inr"] / sim_df["dynamic_peak"]) * 100
+
+        fixed_pnl = float(sim_df["pnl"].sum())
+        dynamic_pnl = float(sim_df["dynamic_pnl"].sum())
+        fixed_dd = float(abs((sim_df["pnl"].cumsum() - sim_df["pnl"].cumsum().cummax()).min()))
+        dynamic_dd = float(abs(sim_df["dynamic_dd_inr"].min()))
+        dynamic_max_dd_pct = float(abs(sim_df["dynamic_dd_pct"].min()))
+
+        metrics = {
+            "initial_capital": float(initial_capital),
+            "alloc_pct": alloc_pct,
+            "slippage_pts": slippage_pts,
+            "include_charges": include_charges,
+            "final_fixed_equity": float(initial_capital) + fixed_pnl,
+            "final_dynamic_equity": float(initial_capital) + dynamic_pnl,
+            "fixed_gross_pnl": float(sim_df["gross_pnl"].sum()),
+            "fixed_charges": float(sim_df["fixed_charges"].sum()),
+            "fixed_slippage": float(sim_df["fixed_slippage"].sum()),
+            "fixed_net_pnl": fixed_pnl,
+            "dynamic_gross_pnl": float(sim_df["dynamic_gross_pnl"].sum()),
+            "dynamic_charges": float(sim_df["dynamic_charges"].sum()),
+            "dynamic_slippage": float(sim_df["dynamic_slippage"].sum()),
+            "dynamic_net_pnl": dynamic_pnl,
+            "pnl_uplift_pct": round(((dynamic_pnl - fixed_pnl) / fixed_pnl) * 100, 1) if fixed_pnl > 0 else 0.0,
+            "fixed_max_dd_inr": fixed_dd,
+            "dynamic_max_dd_inr": dynamic_dd,
+            "dynamic_max_dd_pct": dynamic_max_dd_pct,
+            "max_lots_reached": int(sim_df["dynamic_lots"].max()),
+            "avg_lots": round(float(sim_df["dynamic_lots"].mean()), 2),
+            "scale_events": events,
+        }
+
+        return sim_df, metrics
+
+    @staticmethod
+    def calculate_options_charges(
+        buy_value: float,
+        sell_value: float,
+        brokerage_per_order: float = 20.0,
+        stt_rate: float = 0.001,
+        exchange_rate: float = 0.0003503,
+        sebi_rate: float = 0.000001,
+        stamp_rate: float = 0.00003,
+        gst_rate: float = 0.18,
+    ) -> dict[str, float]:
+        """
+        Computes NSE equity options buying round-trip statutory & brokerage charges.
+        Defaults match Zerodha/NSE rates:
+          - Brokerage: ₹20/order (₹40 round-trip)
+          - STT: 0.1% on sell value
+          - Exchange txn: 0.03503% on turnover
+          - SEBI: 0.0001% (₹10/crore) on turnover
+          - Stamp duty: 0.003% on buy value
+          - GST: 18% on (Brokerage + Exchange + SEBI)
+        """
+        turnover = max(0.0, buy_value) + max(0.0, sell_value)
+        brokerage = 2.0 * brokerage_per_order
+        stt = max(0.0, sell_value) * stt_rate
+        exchange = turnover * exchange_rate
+        sebi = turnover * sebi_rate
+        stamp = max(0.0, buy_value) * stamp_rate
+        gst = (brokerage + exchange + sebi) * gst_rate
+        total = brokerage + stt + exchange + sebi + stamp + gst
+        return {
+            "brokerage": brokerage,
+            "stt": stt,
+            "exchange": exchange,
+            "sebi": sebi,
+            "stamp": stamp,
+            "gst": gst,
+            "total": total,
+        }
 
     # ------------------------------------------------------------------
     # Persistence Helpers (Local CSV Ledger)

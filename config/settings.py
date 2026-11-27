@@ -117,6 +117,8 @@ def _load_yaml_settings(yaml_path: str | None = None) -> dict:
         parsed["sizing_use_broker_balance"] = bool(sz["use_broker_balance"])
     if "initial_capital" in sz:
         parsed["sizing_initial_capital"] = float(sz["initial_capital"])
+    if "alloc_pct" in sz:
+        parsed["sizing_alloc_pct"] = float(sz["alloc_pct"])
     if "base_lots" in sz:
         parsed["sizing_base_lots"] = int(sz["base_lots"])
     if "max_lots" in sz:
@@ -185,9 +187,10 @@ class Settings(BaseSettings):
     # Sizing settings
     sizing_mode: str = "DYNAMIC"
     sizing_use_broker_balance: bool = True
-    sizing_initial_capital: float = 150000.0
+    sizing_initial_capital: float = 100000.0
+    sizing_alloc_pct: float = 0.35
     sizing_base_lots: int = 1
-    sizing_max_lots: int = 5
+    sizing_max_lots: int = 10
     sizing_profit_step_per_lot: float = 40000.0
     sizing_min_trades_per_scale: int = 40
     sizing_step_down_dd_pct: float = 12.0

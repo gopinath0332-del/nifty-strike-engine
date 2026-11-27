@@ -91,17 +91,21 @@ def generate_report(
     df.loc[(df["entry_hour"] == 9) | ((df["entry_hour"] == 10) & (df["entry_minute"] <= 30)), "time_slot"] = "Morning (09:15-10:30)"
     df.loc[(df["entry_hour"] >= 13), "time_slot"] = "Afternoon (13:00-14:45)"
 
-    # Base KPI Calculations
+    # Base KPI Calculations (use dynamic_pnl as primary when dynamic sizing is present)
+    has_dynamic = all(c in df.columns for c in ("dynamic_lots", "dynamic_pnl", "dynamic_equity"))
+    kpi_col = "dynamic_pnl" if has_dynamic else "pnl"
+
     total_trades = len(df)
-    winning_trades = len(df[df["pnl"] > 0])
-    losing_trades = len(df[df["pnl"] <= 0])
+    winning_trades = len(df[df[kpi_col] > 0])
+    losing_trades = len(df[df[kpi_col] <= 0])
     win_rate = (winning_trades / total_trades) * 100 if total_trades else 0
     total_pnl = df["pnl"].sum()
-    gross_profit = df[df["pnl"] > 0]["pnl"].sum()
-    gross_loss = abs(df[df["pnl"] < 0]["pnl"].sum())
+    primary_pnl = df[kpi_col].sum()
+    gross_profit = df[df[kpi_col] > 0][kpi_col].sum()
+    gross_loss = abs(df[df[kpi_col] < 0][kpi_col].sum())
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss else 0
-    max_win = df["pnl"].max()
-    max_loss = df["pnl"].min()
+    max_win = df[kpi_col].max()
+    max_loss = df[kpi_col].min()
 
     # Premium & Margin (1% of Spot)
     df["est_entry_prem"] = (df["entry_spot"] * 0.01).round(1)
@@ -111,13 +115,13 @@ def generate_report(
     roi_margin = (total_pnl / avg_margin_per_trade * 100) if avg_margin_per_trade else 0
 
     # Risk-Reward & Streaks
-    wins_series = df[df["pnl"] > 0]["pnl"]
-    losses_series = abs(df[df["pnl"] < 0]["pnl"])
+    wins_series = df[df[kpi_col] > 0][kpi_col]
+    losses_series = abs(df[df[kpi_col] < 0][kpi_col])
     avg_win = wins_series.mean() if not wins_series.empty else 0
     avg_loss = losses_series.mean() if not losses_series.empty else 0
     rr_ratio = (avg_win / avg_loss) if avg_loss else 0
 
-    pnl_sign = (df["pnl"] > 0).astype(int)
+    pnl_sign = (df[kpi_col] > 0).astype(int)
     streaks = []
     cur_streak = 0
     prev_sign = None
@@ -135,7 +139,7 @@ def generate_report(
     max_consec_losses = abs(min([s for s in streaks if s < 0], default=0))
 
     # Sharpe & Sortino (Annualized based on 252 trading days)
-    daily_pnl = df.groupby("date")["pnl"].sum()
+    daily_pnl = df.groupby("date")[kpi_col].sum()
     mean_daily = daily_pnl.mean()
     std_daily = daily_pnl.std()
     sharpe = (mean_daily / std_daily) * np.sqrt(252) if (std_daily and std_daily > 0) else 0
@@ -145,8 +149,8 @@ def generate_report(
 
     # Holding Duration
     avg_duration = df["holding_mins"].mean()
-    win_duration = df[df["pnl"] > 0]["holding_mins"].mean()
-    loss_duration = df[df["pnl"] < 0]["holding_mins"].mean()
+    win_duration = df[df[kpi_col] > 0]["holding_mins"].mean()
+    loss_duration = df[df[kpi_col] < 0]["holding_mins"].mean()
     min_duration = df["holding_mins"].min()
     max_duration = df["holding_mins"].max()
 
@@ -154,22 +158,83 @@ def generate_report(
     ce_df = df[df["option_type"] == "CE"]
     pe_df = df[df["option_type"] == "PE"]
     ce_total = len(ce_df)
-    ce_wins = len(ce_df[ce_df["pnl"] > 0])
-    ce_losses = len(ce_df[ce_df["pnl"] <= 0])
+    ce_wins = len(ce_df[ce_df[kpi_col] > 0])
+    ce_losses = len(ce_df[ce_df[kpi_col] <= 0])
     ce_win_rate = (ce_wins / ce_total * 100) if ce_total else 0
-    ce_pnl = ce_df["pnl"].sum()
+    ce_pnl = ce_df[kpi_col].sum()
 
     pe_total = len(pe_df)
-    pe_wins = len(pe_df[pe_df["pnl"] > 0])
-    pe_losses = len(pe_df[pe_df["pnl"] <= 0])
+    pe_wins = len(pe_df[pe_df[kpi_col] > 0])
+    pe_losses = len(pe_df[pe_df[kpi_col] <= 0])
     pe_win_rate = (pe_wins / pe_total * 100) if pe_total else 0
-    pe_pnl = pe_df["pnl"].sum()
+    pe_pnl = pe_df[kpi_col].sum()
 
     # Cumulative PnL & Drawdown for Charts
     df["cum_pnl"] = df["pnl"].cumsum()
     df["peak"] = df["cum_pnl"].cummax()
     df["drawdown"] = df["cum_pnl"] - df["peak"]
     max_drawdown = abs(df["drawdown"].min())
+    if has_dynamic:
+        if "capital_before" in df.columns:
+            dyn_initial_cap = float(df["capital_before"].iloc[0])
+        else:
+            dyn_initial_cap = float(df["dynamic_equity"].iloc[0] - df["dynamic_pnl"].iloc[0])
+        dyn_net_pnl = float(df["dynamic_pnl"].sum())
+        dyn_final_equity = float(df["dynamic_equity"].iloc[-1])
+        dyn_roi_pct = (dyn_net_pnl / dyn_initial_cap * 100) if dyn_initial_cap > 0 else 0.0
+        dyn_max_lots = int(df["dynamic_lots"].max())
+        dyn_avg_lots = float(df["dynamic_lots"].mean())
+        dyn_peak = df["dynamic_equity"].cummax()
+        dyn_dd_inr_series = df["dynamic_equity"] - dyn_peak
+        dyn_max_dd_inr = float(abs(dyn_dd_inr_series.min()))
+        dyn_max_dd_pct = float(abs((dyn_dd_inr_series / dyn_peak * 100).min())) if (dyn_peak > 0).all() else 0.0
+        dyn_uplift_pct = ((dyn_net_pnl - total_pnl) / total_pnl * 100) if total_pnl > 0 else 0.0
+        has_costs = all(c in df.columns for c in ("dynamic_charges", "dynamic_slippage"))
+        dyn_total_charges = float(df["dynamic_charges"].sum()) if has_costs else 0.0
+        dyn_total_slip = float(df["dynamic_slippage"].sum()) if has_costs else 0.0
+        dyn_gross_pnl = float(df["dynamic_gross_pnl"].sum()) if "dynamic_gross_pnl" in df.columns else (dyn_net_pnl + dyn_total_charges + dyn_total_slip)
+        if not has_costs:
+            df["dynamic_charges"] = 0.0
+            df["dynamic_slippage"] = 0.0
+        if "dynamic_qty" not in df.columns:
+            df["dynamic_qty"] = df["dynamic_lots"] * lot_size
+        if "dynamic_margin" not in df.columns:
+            df["dynamic_margin"] = (df["est_entry_prem"] * df["dynamic_qty"]).round(2)
+        if "capital_before" not in df.columns:
+            df["capital_before"] = (df["dynamic_equity"] - df["dynamic_pnl"]).round(2)
+        if "dynamic_action" not in df.columns:
+            df["dynamic_action"] = "MAINTAIN"
+        chart_dyn_pnl = (df["dynamic_equity"] - dyn_initial_cap).round(2).tolist()
+        chart_dyn_lots = df["dynamic_lots"].astype(int).tolist()
+        chart_dyn_dd = dyn_dd_inr_series.round(2).tolist()
+
+        scale_events_rows = []
+        for idx_ev, ev_row in df[df["dynamic_action"].astype(str).str.contains("SCALE_UP|STEP_DOWN", na=False)].iterrows():
+            act = str(ev_row["dynamic_action"])
+            badge_cls = "profit" if "SCALE_UP" in act else "loss"
+            scale_events_rows.append(f"""
+            <tr>
+                <td>#{idx_ev + 1}</td>
+                <td>{ev_row['date']}</td>
+                <td><span class="badge {badge_cls}">{act}</span></td>
+                <td>{int(ev_row['dynamic_lots'])} ({int(ev_row['dynamic_qty'])} qty)</td>
+                <td>₹{float(ev_row['capital_before']):,.2f}</td>
+            </tr>
+            """)
+    else:
+        dyn_initial_cap = 0.0
+        dyn_net_pnl = total_pnl
+        dyn_final_equity = total_pnl
+        dyn_roi_pct = 0.0
+        dyn_max_lots = 1
+        dyn_avg_lots = 1.0
+        dyn_max_dd_inr = max_drawdown
+        dyn_max_dd_pct = 0.0
+        dyn_uplift_pct = 0.0
+        chart_dyn_pnl = []
+        chart_dyn_lots = []
+        chart_dyn_dd = []
+        scale_events_rows = []
 
     chart_labels = df["date"].tolist()
     chart_pnl = df["cum_pnl"].round(2).tolist()
@@ -177,25 +242,48 @@ def generate_report(
 
     # Monthly breakdown
     df["month"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m")
-    monthly_stats = df.groupby("month").agg(
-        trades=("pnl", "count"),
-        wins=("pnl", lambda x: (x > 0).sum()),
-        net_pnl=("pnl", "sum"),
-    ).reset_index()
+    if has_dynamic:
+        monthly_stats = df.groupby("month").agg(
+            trades=("pnl", "count"),
+            wins=("pnl", lambda x: (x > 0).sum()),
+            net_pnl=("pnl", "sum"),
+            dyn_pnl=("dynamic_pnl", "sum"),
+            avg_lots=("dynamic_lots", "mean"),
+        ).reset_index()
+    else:
+        monthly_stats = df.groupby("month").agg(
+            trades=("pnl", "count"),
+            wins=("pnl", lambda x: (x > 0).sum()),
+            net_pnl=("pnl", "sum"),
+        ).reset_index()
     monthly_stats["win_rate"] = (monthly_stats["wins"] / monthly_stats["trades"] * 100).round(1)
 
     monthly_rows_html = []
     for _, row in monthly_stats.iterrows():
         pnl = row["net_pnl"]
         cls = "profit" if pnl >= 0 else "loss"
-        monthly_rows_html.append(f"""
-        <tr>
-            <td><strong>{row['month']}</strong></td>
-            <td>{row['trades']}</td>
-            <td>{row['win_rate']}%</td>
-            <td class="{cls}">₹{pnl:+,.2f}</td>
-        </tr>
-        """)
+        if has_dynamic:
+            dpnl = row["dyn_pnl"]
+            dcls = "profit" if dpnl >= 0 else "loss"
+            monthly_rows_html.append(f"""
+            <tr>
+                <td><strong>{row['month']}</strong></td>
+                <td>{row['trades']}</td>
+                <td>{row['win_rate']}%</td>
+                <td>{row['avg_lots']:.2f}</td>
+                <td class="{cls}">₹{pnl:+,.2f}</td>
+                <td class="{dcls}">₹{dpnl:+,.2f}</td>
+            </tr>
+            """)
+        else:
+            monthly_rows_html.append(f"""
+            <tr>
+                <td><strong>{row['month']}</strong></td>
+                <td>{row['trades']}</td>
+                <td>{row['win_rate']}%</td>
+                <td class="{cls}">₹{pnl:+,.2f}</td>
+            </tr>
+            """)
 
     # Day of Week Breakdown
     day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -283,24 +371,178 @@ def generate_report(
         exit_time_str = str(row["exit_time"]).split(" ")[-1][:5]
         dur_mins = int(row["holding_mins"])
 
-        row_html = f"""
-        <tr data-type="{row['option_type']}" data-outcome="{'win' if pnl > 0 else 'loss'}" data-exit="{row['exit_reason']}">
-            <td><strong>#{i+1}</strong></td>
-            <td>{row['date']}</td>
-            <td><code>{entry_time_str}</code></td>
-            <td><code>{exit_time_str}</code></td>
-            <td><span class="dur-tag">{dur_mins}m</span></td>
-            <td>{type_badge}</td>
-            <td><strong>{row['symbol']}</strong></td>
-            <td>₹{row['entry_spot']:,.1f}</td>
-            <td>₹{row['est_entry_prem']:.1f}</td>
-            <td>₹{row['est_exit_prem']:.1f}</td>
-            <td>₹{row['margin_used']:,.2f}</td>
-            <td>{pnl_badge}</td>
-            <td><span class="reason-tag">{row['exit_reason']}</span></td>
-        </tr>
-        """
+        if has_dynamic:
+            dpnl = float(row["dynamic_pnl"])
+            dpnl_cls = "profit" if dpnl > 0 else "loss"
+            dpnl_badge = f'<span class="badge {dpnl_cls}">₹{dpnl:+,.2f}</span>'
+            lots_val = int(row["dynamic_lots"])
+            qty_val = int(row["dynamic_qty"])
+            cap_before = float(row["capital_before"])
+            dyn_margin = float(row["dynamic_margin"])
+            dyn_cost = float(row.get("dynamic_charges", 0.0)) + float(row.get("dynamic_slippage", 0.0))
+            dyn_eq = float(row["dynamic_equity"])
+            act_str = str(row["dynamic_action"])
+            act_cls = "profit" if "SCALE_UP" in act_str else ("loss" if "STEP_DOWN" in act_str else "")
+            act_html = f'<span class="badge {act_cls}">{act_str}</span>' if act_cls else f'<span class="reason-tag">{act_str}</span>'
+
+            row_html = f"""
+            <tr data-type="{row['option_type']}" data-outcome="{'win' if pnl > 0 else 'loss'}" data-exit="{row['exit_reason']}">
+                <td><strong>#{i+1}</strong></td>
+                <td>{row['date']}</td>
+                <td><code>{entry_time_str}</code></td>
+                <td><code>{exit_time_str}</code></td>
+                <td><span class="dur-tag">{dur_mins}m</span></td>
+                <td>{type_badge}</td>
+                <td><strong>{row['symbol']}</strong></td>
+                <td>₹{row['entry_spot']:,.1f}</td>
+                <td>₹{row['est_entry_prem']:.1f}</td>
+                <td>₹{row['est_exit_prem']:.1f}</td>
+                <td><strong>{lots_val}</strong> <span style="color:var(--text-muted); font-size:11px;">({qty_val})</span></td>
+                <td>₹{cap_before:,.2f}</td>
+                <td>₹{dyn_margin:,.2f}</td>
+                <td class="loss">-₹{dyn_cost:,.2f}</td>
+                <td>{pnl_badge}</td>
+                <td>{dpnl_badge}</td>
+                <td><strong>₹{dyn_eq:,.2f}</strong></td>
+                <td>{act_html}</td>
+                <td><span class="reason-tag">{row['exit_reason']}</span></td>
+            </tr>
+            """
+        else:
+            row_html = f"""
+            <tr data-type="{row['option_type']}" data-outcome="{'win' if pnl > 0 else 'loss'}" data-exit="{row['exit_reason']}">
+                <td><strong>#{i+1}</strong></td>
+                <td>{row['date']}</td>
+                <td><code>{entry_time_str}</code></td>
+                <td><code>{exit_time_str}</code></td>
+                <td><span class="dur-tag">{dur_mins}m</span></td>
+                <td>{type_badge}</td>
+                <td><strong>{row['symbol']}</strong></td>
+                <td>₹{row['entry_spot']:,.1f}</td>
+                <td>₹{row['est_entry_prem']:.1f}</td>
+                <td>₹{row['est_exit_prem']:.1f}</td>
+                <td>₹{row['margin_used']:,.2f}</td>
+                <td>{pnl_badge}</td>
+                <td><span class="reason-tag">{row['exit_reason']}</span></td>
+            </tr>
+            """
         trade_rows_html.append(row_html)
+
+    if has_dynamic:
+        dynamic_section_html = f"""
+    <!-- SECTION 1B: Dynamic Lot Sizing & Compounding Intelligence -->
+    <div class="section-header">🚀 Dynamic Lot Sizing &amp; Capital Compounding (Initial Capital: ₹{dyn_initial_cap:,.0f})</div>
+    <div class="grid-cards">
+        <div class="card">
+            <div class="card-label">Dynamic Final Equity</div>
+            <div class="card-val profit">₹{dyn_final_equity:,.2f}</div>
+            <div class="card-sub">Initial: ₹{dyn_initial_cap:,.0f} • ROI: <strong class="profit">{dyn_roi_pct:+.1f}%</strong></div>
+        </div>
+        <div class="card">
+            <div class="card-label">Dynamic Net P&amp;L vs Fixed 1-Lot</div>
+            <div class="card-val profit">₹{dyn_net_pnl:+,.2f}</div>
+            <div class="card-sub">1-Lot P&amp;L: ₹{total_pnl:+,.2f} (<strong class="profit">{dyn_uplift_pct:+.1f}% uplift</strong>)</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Lot Size Range &amp; Average</div>
+            <div class="card-val" style="color:var(--primary);">1 – {dyn_max_lots} <span style="font-size:14px; color:var(--text-muted);">Lots</span></div>
+            <div class="card-sub">Avg: <strong>{dyn_avg_lots:.2f} lots</strong> ({dyn_avg_lots * lot_size:.0f} avg qty)</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Dynamic Max Drawdown</div>
+            <div class="card-val" style="color:var(--red);">₹{dyn_max_dd_inr:,.2f}</div>
+            <div class="card-sub"><strong>{dyn_max_dd_pct:.2f}%</strong> of Peak Equity • Fixed DD: ₹{max_drawdown:,.2f}</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Brokerage, Taxes &amp; Slippage</div>
+            <div class="card-val" style="color:var(--amber);">-₹{dyn_total_charges + dyn_total_slip:,.2f}</div>
+            <div class="card-sub">Charges: ₹{dyn_total_charges:,.0f} | Slip: ₹{dyn_total_slip:,.0f} (Gross: ₹{dyn_gross_pnl:+,.0f})</div>
+        </div>
+    </div>
+
+    <div class="chart-row" style="margin-top:0;">
+        <div class="panel">
+            <div class="panel-title">
+                <span>📦 Lot Size Progression Over Trades</span>
+                <span style="font-size:12px; color:var(--primary);">Peak: {dyn_max_lots} Lots ({dyn_max_lots * lot_size} Qty)</span>
+            </div>
+            <canvas id="lotsChart" height="65"></canvas>
+        </div>
+        <div class="panel" style="overflow-y:auto; max-height: 290px;">
+            <div class="panel-title">⚡ Lot Scaling Events ({len(scale_events_rows)})</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Trade</th>
+                        <th>Date</th>
+                        <th>Action</th>
+                        <th>New Size</th>
+                        <th>Capital</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {"".join(scale_events_rows) if scale_events_rows else '<tr><td colspan="5" style="color:var(--text-muted); text-align:center;">No scaling transitions triggered</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+    </div>
+        """
+        monthly_header_html = """
+                    <tr>
+                        <th>Month</th>
+                        <th>Trades</th>
+                        <th>Win %</th>
+                        <th>Avg Lots</th>
+                        <th>1-Lot P&amp;L</th>
+                        <th>Dynamic P&amp;L</th>
+                    </tr>"""
+        table_header_html = f"""
+                <tr>
+                    <th onclick="sortTable(0)"># ⬍</th>
+                    <th onclick="sortTable(1)">Date ⬍</th>
+                    <th onclick="sortTable(2)">Entry ⬍</th>
+                    <th onclick="sortTable(3)">Exit ⬍</th>
+                    <th onclick="sortTable(4)">Duration ⬍</th>
+                    <th onclick="sortTable(5)">Type ⬍</th>
+                    <th onclick="sortTable(6)">Contract Symbol ⬍</th>
+                    <th onclick="sortTable(7)">Spot Price ⬍</th>
+                    <th onclick="sortTable(8)">Est. Entry (1%) ⬍</th>
+                    <th onclick="sortTable(9)">Est. Exit ⬍</th>
+                    <th onclick="sortTable(10)">Lots (Qty) ⬍</th>
+                    <th onclick="sortTable(11)">Capital Before ⬍</th>
+                    <th onclick="sortTable(12)">Margin Used ⬍</th>
+                    <th onclick="sortTable(13)">Cost+Slip ⬍</th>
+                    <th onclick="sortTable(14)">1-Lot Net P&amp;L ⬍</th>
+                    <th onclick="sortTable(15)">Dynamic Net P&amp;L ⬍</th>
+                    <th onclick="sortTable(16)">Equity After ⬍</th>
+                    <th onclick="sortTable(17)">Sizing Action ⬍</th>
+                    <th onclick="sortTable(18)">Exit Reason ⬍</th>
+                </tr>"""
+    else:
+        dynamic_section_html = ""
+        monthly_header_html = """
+                    <tr>
+                        <th>Month</th>
+                        <th>Trades</th>
+                        <th>Win %</th>
+                        <th>Net P&amp;L</th>
+                    </tr>"""
+        table_header_html = f"""
+                <tr>
+                    <th onclick="sortTable(0)"># ⬍</th>
+                    <th onclick="sortTable(1)">Date ⬍</th>
+                    <th onclick="sortTable(2)">Entry ⬍</th>
+                    <th onclick="sortTable(3)">Exit ⬍</th>
+                    <th onclick="sortTable(4)">Duration ⬍</th>
+                    <th onclick="sortTable(5)">Type ⬍</th>
+                    <th onclick="sortTable(6)">Contract Symbol ⬍</th>
+                    <th onclick="sortTable(7)">Spot Price ⬍</th>
+                    <th onclick="sortTable(8)">Est. Entry (1%) ⬍</th>
+                    <th onclick="sortTable(9)">Est. Exit ⬍</th>
+                    <th onclick="sortTable(10)">Margin ({lot_size} Qty) ⬍</th>
+                    <th onclick="sortTable(11)">Net P&amp;L (₹) ⬍</th>
+                    <th onclick="sortTable(12)">Exit Reason ⬍</th>
+                </tr>"""
 
     # HTML Document Template
     html_content = f"""<!DOCTYPE html>
@@ -517,9 +759,9 @@ def generate_report(
     <!-- SECTION 1: Top-Level Quant & Risk KPI Cards -->
     <div class="grid-cards">
         <div class="card">
-            <div class="card-label">Net Profit / Loss</div>
-            <div class="card-val profit">₹{total_pnl:+,.2f}</div>
-            <div class="card-sub">Return on Margin: <strong class="profit">{roi_margin:+.1f}%</strong></div>
+            <div class="card-label">{'Dynamic Net Profit / Loss' if has_dynamic else 'Net Profit / Loss'}</div>
+            <div class="card-val {'profit' if primary_pnl >= 0 else 'loss'}">₹{primary_pnl:+,.2f}</div>
+            <div class="card-sub">{f'ROI: <strong class="profit">{dyn_roi_pct:+.1f}%</strong> • 1-Lot: ₹{total_pnl:+,.0f}' if has_dynamic else f'Return on Margin: <strong class="profit">{roi_margin:+.1f}%</strong>'}</div>
         </div>
         <div class="card">
             <div class="card-label">Overall Win Rate</div>
@@ -548,7 +790,7 @@ def generate_report(
         <div class="card">
             <div class="card-label">Profit Factor & Drawdown</div>
             <div class="card-val">{profit_factor}</div>
-            <div class="card-sub">Max DD: <strong style="color:var(--red);">₹{max_drawdown:,.2f}</strong></div>
+            <div class="card-sub">Max DD: <strong style="color:var(--red);">₹{(dyn_max_dd_inr if has_dynamic else max_drawdown):,.2f}</strong>{f' ({dyn_max_dd_pct:.1f}%)' if has_dynamic else ''}</div>
         </div>
         <div class="card">
             <div class="card-label">Sharpe & Sortino</div>
@@ -566,27 +808,22 @@ def generate_report(
     <div class="chart-row">
         <div class="panel">
             <div class="panel-title">
-                <span>📈 Cumulative Equity Curve (₹)</span>
-                <span style="font-size:12px; color:var(--green);">Peak: ₹{df['cum_pnl'].max():+,.2f}</span>
+                <span>📈 Cumulative P&amp;L Curve: Dynamic vs Fixed 1-Lot (₹)</span>
+                <span style="font-size:12px; color:var(--green);">1-Lot Peak: ₹{df['cum_pnl'].max():+,.2f}</span>
             </div>
             <canvas id="equityChart" height="95"></canvas>
             
             <div class="panel-title" style="margin-top:20px;">
                 <span>🌊 Drawdown Underwater Profile (₹)</span>
-                <span style="font-size:12px; color:var(--red);">Max DD: -₹{max_drawdown:,.2f}</span>
+                <span style="font-size:12px; color:var(--red);">1-Lot Max DD: -₹{max_drawdown:,.2f}</span>
             </div>
             <canvas id="drawdownChart" height="55"></canvas>
         </div>
         <div class="panel" style="overflow-y:auto; max-height: 480px;">
             <div class="panel-title">📅 Monthly Performance</div>
-            <table>
+            <table style="font-size:12px;">
                 <thead>
-                    <tr>
-                        <th>Month</th>
-                        <th>Trades</th>
-                        <th>Win %</th>
-                        <th>Net P&L</th>
-                    </tr>
+                    {monthly_header_html}
                 </thead>
                 <tbody>
                     {"".join(monthly_rows_html)}
@@ -594,6 +831,8 @@ def generate_report(
             </table>
         </div>
     </div>
+
+    {dynamic_section_html}
 
     <!-- SECTION 2 & 3: Temporal Analytics & Signal Diagnostics -->
     <div class="section-header">🔍 Temporal & Diagnostic Breakdown</div>
@@ -700,21 +939,7 @@ def generate_report(
     <div class="table-container">
         <table id="tradesTable">
             <thead>
-                <tr>
-                    <th onclick="sortTable(0)"># ⬍</th>
-                    <th onclick="sortTable(1)">Date ⬍</th>
-                    <th onclick="sortTable(2)">Entry ⬍</th>
-                    <th onclick="sortTable(3)">Exit ⬍</th>
-                    <th onclick="sortTable(4)">Duration ⬍</th>
-                    <th onclick="sortTable(5)">Type ⬍</th>
-                    <th onclick="sortTable(6)">Contract Symbol ⬍</th>
-                    <th onclick="sortTable(7)">Spot Price ⬍</th>
-                    <th onclick="sortTable(8)">Est. Entry (1%) ⬍</th>
-                    <th onclick="sortTable(9)">Est. Exit ⬍</th>
-                    <th onclick="sortTable(10)">Margin ({lot_size} Qty) ⬍</th>
-                    <th onclick="sortTable(11)">Net P&L (₹) ⬍</th>
-                    <th onclick="sortTable(12)">Exit Reason ⬍</th>
-                </tr>
+                {table_header_html}
             </thead>
             <tbody>
                 {"".join(trade_rows_html)}
@@ -726,24 +951,38 @@ def generate_report(
 <script>
     // 1. Equity Curve Chart
     const ctxEquity = document.getElementById('equityChart').getContext('2d');
+    const equityDatasets = [{{
+        label: 'Fixed 1-Lot P&L (₹)',
+        data: {json.dumps(chart_pnl)},
+        borderColor: '#38bdf8',
+        backgroundColor: 'rgba(56, 189, 248, 0.06)',
+        fill: true,
+        tension: 0.25,
+        borderWidth: 2,
+        pointRadius: 1,
+    }}];
+    const dynPnlData = {json.dumps(chart_dyn_pnl)};
+    if (dynPnlData.length > 0) {{
+        equityDatasets.unshift({{
+            label: 'Dynamic Compounding P&L (₹)',
+            data: dynPnlData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.10)',
+            fill: true,
+            tension: 0.25,
+            borderWidth: 2.5,
+            pointRadius: 1,
+        }});
+    }}
     new Chart(ctxEquity, {{
         type: 'line',
         data: {{
             labels: {json.dumps(chart_labels)},
-            datasets: [{{
-                label: 'Cumulative P&L (₹)',
-                data: {json.dumps(chart_pnl)},
-                borderColor: '#10b981',
-                backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                fill: true,
-                tension: 0.25,
-                borderWidth: 2,
-                pointRadius: 1,
-            }}]
+            datasets: equityDatasets
         }},
         options: {{
             responsive: true,
-            plugins: {{ legend: {{ display: false }} }},
+            plugins: {{ legend: {{ display: dynPnlData.length > 0, labels: {{ color: '#94a3b8' }} }} }},
             scales: {{
                 x: {{ grid: {{ display: false }}, ticks: {{ color: '#94a3b8', maxTicksLimit: 12 }} }},
                 y: {{ grid: {{ color: 'rgba(51, 65, 85, 0.3)' }}, ticks: {{ color: '#94a3b8' }} }}
@@ -753,30 +992,74 @@ def generate_report(
 
     // 2. Drawdown Underwater Chart
     const ctxDD = document.getElementById('drawdownChart').getContext('2d');
+    const ddDatasets = [{{
+        label: 'Fixed 1-Lot Drawdown (₹)',
+        data: {json.dumps(chart_dd)},
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245, 158, 11, 0.10)',
+        fill: true,
+        tension: 0.2,
+        borderWidth: 1.5,
+        pointRadius: 0,
+    }}];
+    const dynDdData = {json.dumps(chart_dyn_dd)};
+    if (dynDdData.length > 0) {{
+        ddDatasets.unshift({{
+            label: 'Dynamic Drawdown (₹)',
+            data: dynDdData,
+            borderColor: '#f43f5e',
+            backgroundColor: 'rgba(244, 63, 94, 0.15)',
+            fill: true,
+            tension: 0.2,
+            borderWidth: 1.8,
+            pointRadius: 0,
+        }});
+    }}
     new Chart(ctxDD, {{
         type: 'line',
         data: {{
             labels: {json.dumps(chart_labels)},
-            datasets: [{{
-                label: 'Drawdown (₹)',
-                data: {json.dumps(chart_dd)},
-                borderColor: '#f43f5e',
-                backgroundColor: 'rgba(244, 63, 94, 0.15)',
-                fill: true,
-                tension: 0.2,
-                borderWidth: 1.5,
-                pointRadius: 0,
-            }}]
+            datasets: ddDatasets
         }},
         options: {{
             responsive: true,
-            plugins: {{ legend: {{ display: false }} }},
+            plugins: {{ legend: {{ display: dynDdData.length > 0, labels: {{ color: '#94a3b8' }} }} }},
             scales: {{
                 x: {{ display: false }},
                 y: {{ grid: {{ color: 'rgba(51, 65, 85, 0.3)' }}, ticks: {{ color: '#94a3b8', maxTicksLimit: 4 }} }}
             }}
         }}
     }});
+
+    // 2B. Lot Size Progression Chart
+    const lotsCanvas = document.getElementById('lotsChart');
+    const dynLotsData = {json.dumps(chart_dyn_lots)};
+    if (lotsCanvas && dynLotsData.length > 0) {{
+        new Chart(lotsCanvas.getContext('2d'), {{
+            type: 'line',
+            data: {{
+                labels: {json.dumps(chart_labels)},
+                datasets: [{{
+                    label: 'Lots Traded',
+                    data: dynLotsData,
+                    borderColor: '#38bdf8',
+                    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+                    fill: true,
+                    stepped: true,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                plugins: {{ legend: {{ display: false }} }},
+                scales: {{
+                    x: {{ grid: {{ display: false }}, ticks: {{ color: '#94a3b8', maxTicksLimit: 10 }} }},
+                    y: {{ beginAtZero: true, ticks: {{ color: '#94a3b8', stepSize: 1 }} }}
+                }}
+            }}
+        }});
+    }}
 
     // 3. Interactive Filtering
     let currentCategory = 'all';

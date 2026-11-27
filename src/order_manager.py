@@ -74,10 +74,12 @@ class OrderManager:
         state_manager: Any = None,
         position_sizer: PositionSizer | None = None,
         use_broker_balance: bool = True,
+        sizing_mode: str = "FIXED",
     ) -> None:
         self._kite   = kite
         self._engine = signal_engine
         self._notify = notifier
+        self._base_qty = lot_size
         self._qty    = lot_size
         self._live   = live_order_placement
         self._strategy_name = strategy_name
@@ -85,6 +87,7 @@ class OrderManager:
         self._state_manager = state_manager
         self._sizer = position_sizer or PositionSizer(units_per_lot=65)
         self._use_broker_balance = use_broker_balance
+        self._sizing_mode = sizing_mode.strip().upper()
         self._strike_selector = StrikeSelector(kite=kite)
 
         # In-memory position tracking
@@ -478,6 +481,22 @@ class OrderManager:
 
         return False
 
+    def _resolve_compounding_capital(self) -> float:
+        """Returns current equity for dynamic lot sizing (live Zerodha cash or initial_capital + net PnL)."""
+        if self._use_broker_balance and self._live:
+            cash = self._sizer.fetch_broker_cash(self._kite)
+            if cash is not None and cash > 0:
+                return cash
+
+        trades: list[dict[str, Any]] = []
+        if self._firestore and self._firestore.is_connected:
+            trades = self._firestore.get_closed_trades(strategy_name=self._strategy_name)
+        if not trades:
+            trades = self._sizer.load_live_trades()
+
+        net_pnl = sum(float(t.get("pnl") or 0.0) for t in trades)
+        return max(0.0, self._sizer.initial_capital + net_pnl)
+
     def _buy(
         self,
         symbol: str,
@@ -498,6 +517,19 @@ class OrderManager:
 
         # Margin pre-check
         premium_estimate = estimated_ltp if (estimated_ltp and estimated_ltp > 0) else (spot * 0.01)
+
+        # Dynamic capital-compounding lot sizing (when sizing_mode == DYNAMIC)
+        if self._sizing_mode == "DYNAMIC":
+            capital = self._resolve_compounding_capital()
+            dyn_lots = self._sizer.calculate_compounding_lots(capital, premium_estimate)
+            self._qty = dyn_lots * self._sizer.units_per_lot
+            logger.info(
+                "[DYNAMIC SIZING] Capital=₹%,.2f | Alloc=%.0f%% | EstPrem=₹%.2f -> %d lot(s) (%d qty)",
+                capital, self._sizer.alloc_pct * 100, premium_estimate, dyn_lots, self._qty,
+            )
+        else:
+            self._qty = self._base_qty
+
         required_margin = round(premium_estimate * self._qty, 2)
 
         if self._live:

@@ -140,6 +140,7 @@ class SessionManager:
             min_trades_per_scale=settings.sizing_min_trades_per_scale,
             step_down_dd_pct=settings.sizing_step_down_dd_pct,
             units_per_lot=65,
+            alloc_pct=settings.sizing_alloc_pct,
         )
         self._order_mgr = OrderManager(
             kite=self._kite,
@@ -152,6 +153,7 @@ class SessionManager:
             state_manager=self._state_manager,
             position_sizer=self._sizer,
             use_broker_balance=settings.sizing_use_broker_balance,
+            sizing_mode=settings.sizing_mode,
         )
 
         # Log initial position sizing & broker balance status

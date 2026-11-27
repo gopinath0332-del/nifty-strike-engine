@@ -45,12 +45,13 @@ timing:
 
 # Position Sizing & Scaling Recommendations
 sizing:
-  mode: "FIXED" # FIXED (strictly lot_size) or DYNAMIC (suggests scale-up / step-down)
-  use_broker_balance: true # In LIVE mode, fetch real-time liquid cash from Zerodha
-  initial_capital: 150000 # Starting capital in INR (used in backtesting & simulation fallback)
+  mode: "DYNAMIC" # FIXED (strictly lot_size) or DYNAMIC (capital-compounding lot sizing)
+  use_broker_balance: false # In LIVE mode, fetch real-time liquid cash from Zerodha
+  initial_capital: 100000 # Starting capital in INR (used in backtesting & simulation fallback)
+  alloc_pct: 0.35 # Fraction of current capital deployed per trade (0.35 = 35% trade, 65% drawdown cushion)
   base_lots: 1 # Starting lot count (1 lot = 65 units)
-  max_lots: 5 # Maximum allowable lot count
-  profit_step_per_lot: 40000 # Net profit in INR needed per additional lot
-  min_trades_per_scale: 40 # Minimum trade count on current tier before scaling up
-  step_down_dd_pct: 12.0 # Drawdown % from peak equity to trigger step-down
+  max_lots: 10 # Maximum allowable lot count
+  profit_step_per_lot: 40000 # Net profit in INR needed per additional lot (Fixed-Ratio mode)
+  min_trades_per_scale: 40 # Minimum trade count on current tier before scaling up (Fixed-Ratio mode)
+  step_down_dd_pct: 12.0 # Drawdown % from peak equity to trigger step-down (Fixed-Ratio mode)
 

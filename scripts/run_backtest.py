@@ -44,7 +44,14 @@ from src.position_sizer import PositionSizer
 from src.signal_engine import SignalEngine
 from src.strike_selector import select_strike
 
-def run_backtest():
+def run_backtest(
+    compounding: bool = True,
+    initial_capital: float = 100000.0,
+    alloc_pct: float = 0.35,
+    max_lots: int = 10,
+    slippage_pts: float = 1.0,
+    include_charges: bool = True,
+):
     cfg = get_settings()
     interval_str = f"{cfg.candle_interval_minutes}minute" if cfg.candle_interval_minutes != 3 else "3min"
     data_file = os.path.join(os.path.dirname(__file__), "..", "data", f"nifty_{interval_str}_2026.csv")
@@ -218,21 +225,38 @@ def run_backtest():
 
     # Dynamic Position Sizing Simulation
     print("\n" + "=" * 70)
-    print("  DYNAMIC POSITION SIZING SIMULATION (Fixed 1-Lot vs. Dynamic Scaling)")
+    if compounding:
+        print(f"  CAPITAL-COMPOUNDING DYNAMIC LOT SIMULATION (Initial: ₹{initial_capital:,.0f}, Alloc: {alloc_pct*100:.0f}%)")
+    else:
+        print("  DYNAMIC POSITION SIZING SIMULATION (Fixed 1-Lot vs. Dynamic Scaling)")
     print("=" * 70)
     sizer = PositionSizer(
-        initial_capital=cfg.sizing_initial_capital,
+        initial_capital=initial_capital if compounding else cfg.sizing_initial_capital,
         base_lots=cfg.sizing_base_lots,
-        max_lots=cfg.sizing_max_lots,
+        max_lots=max_lots if compounding else cfg.sizing_max_lots,
         profit_step_per_lot=cfg.sizing_profit_step_per_lot,
         min_trades_per_scale=cfg.sizing_min_trades_per_scale,
         step_down_dd_pct=cfg.sizing_step_down_dd_pct,
         units_per_lot=cfg.lot_size,
     )
-    sim_df, sz_metrics = sizer.simulate_backtest(trades_df)
+    if compounding:
+        sim_df, sz_metrics = sizer.simulate_compounding_backtest(
+            trades_df,
+            initial_capital=initial_capital,
+            alloc_pct=alloc_pct,
+            max_lots=max_lots,
+            slippage_pts=slippage_pts,
+            include_charges=include_charges,
+        )
+    else:
+        sim_df, sz_metrics = sizer.simulate_backtest(trades_df)
 
     print(f"Starting Capital         : ₹{sz_metrics['initial_capital']:,.2f}")
+    if compounding:
+        print(f"Fixed 1-Lot Gross P&L    : ₹{sz_metrics['fixed_gross_pnl']:+,.2f} (Charges: -₹{sz_metrics['fixed_charges']:,.2f}, Slip: -₹{sz_metrics['fixed_slippage']:,.2f})")
     print(f"Fixed 1-Lot Net P&L      : ₹{sz_metrics['fixed_net_pnl']:+,.2f} (Final Equity: ₹{sz_metrics['final_fixed_equity']:,.2f})")
+    if compounding:
+        print(f"Dynamic Gross P&L        : ₹{sz_metrics['dynamic_gross_pnl']:+,.2f} (Charges: -₹{sz_metrics['dynamic_charges']:,.2f}, Slip: -₹{sz_metrics['dynamic_slippage']:,.2f})")
     print(f"Dynamic Scaled Net P&L   : ₹{sz_metrics['dynamic_net_pnl']:+,.2f} (Final Equity: ₹{sz_metrics['final_dynamic_equity']:,.2f})")
     print(f"Net Profit Uplift        : {sz_metrics['pnl_uplift_pct']:+.1f}%")
     print(f"Fixed Max Drawdown (₹)   : ₹{sz_metrics['fixed_max_dd_inr']:,.2f}")
@@ -279,5 +303,21 @@ def run_backtest():
 
 
 if __name__ == "__main__":
-    run_backtest()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run NIFTY Options Buying V9 Backtest")
+    parser.add_argument("--no-compounding", action="store_true", help="Use Fixed-Ratio tier model instead of capital-compounding")
+    parser.add_argument("--initial-capital", type=float, default=100000.0, help="Initial capital in INR (default: 100000)")
+    parser.add_argument("--alloc-pct", type=float, default=0.35, help="Capital allocation fraction per trade (default: 0.35)")
+    parser.add_argument("--max-lots", type=int, default=10, help="Maximum lots cap (default: 10)")
+    parser.add_argument("--slippage-pts", type=float, default=1.0, help="Round-trip slippage in option points (default: 1.0)")
+    parser.add_argument("--no-charges", action="store_true", help="Exclude brokerage, STT, exchange, SEBI, stamp duty, and GST")
+    args = parser.parse_args()
+    run_backtest(
+        compounding=not args.no_compounding,
+        initial_capital=args.initial_capital,
+        alloc_pct=args.alloc_pct,
+        max_lots=args.max_lots,
+        slippage_pts=args.slippage_pts,
+        include_charges=not args.no_charges,
+    )
 
